@@ -3,16 +3,56 @@
 from __future__ import annotations
 
 import socket
+import subprocess
+import sys
 from collections.abc import Generator
 from pathlib import Path
 
 import pytest
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
 
 @pytest.fixture
 def project_root() -> Path:
     """Return the repository root without relying on the caller's directory."""
-    return Path(__file__).resolve().parents[1]
+    return _PROJECT_ROOT
+
+
+@pytest.fixture
+def git_repository(tmp_path: Path) -> Path:
+    """Create a staged-only Git repository for tracked-file scanner tests."""
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(
+        ["git", "init", "--quiet", str(repository)],
+        check=True,
+        capture_output=True,
+    )
+    (repository / ".gitignore").write_text(
+        ".private/\n"
+        "local-evidence/\n"
+        "*.har\n"
+        "*.saz\n"
+        "*.cap\n"
+        "*.pcap\n"
+        "*.pcapng\n"
+        "*.pem\n"
+        "*.cer\n"
+        "*.crt\n"
+        "*.p12\n"
+        "*.pfx\n"
+        "*.key\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "add", ".gitignore"],
+        check=True,
+        capture_output=True,
+    )
+    return repository
 
 
 @pytest.fixture(autouse=True)

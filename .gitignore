@@ -5,6 +5,7 @@ local-evidence/
 # Captures, certificates, and logs must never enter Git
 *.har
 *.saz
+*.cap
 *.pcap
 *.pcapng
 *.pem
