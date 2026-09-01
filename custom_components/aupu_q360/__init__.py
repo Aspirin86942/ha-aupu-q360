@@ -31,8 +31,7 @@ async def _async_teardown_runtime(entry: ConfigEntry[AupuRuntimeData]) -> None:
         return
     teardown_failed = False
     current_task = asyncio.current_task()
-    external_cancel = current_task is not None and current_task.cancelling() > 0
-    caught_external_cancel: asyncio.CancelledError | None = None
+    pending_control: BaseException | None = None
     seen: set[int] = set()
     try:
         for stopper in tuple(entry.runtime_data.stoppers):
@@ -40,28 +39,25 @@ async def _async_teardown_runtime(entry: ConfigEntry[AupuRuntimeData]) -> None:
             if identity in seen:
                 continue
             seen.add(identity)
-            cancelling_before = current_task.cancelling() if current_task else 0
             try:
                 await stopper.async_stop()
             except asyncio.CancelledError as exc:
-                cancelling_after = current_task.cancelling() if current_task else 0
-                if cancelling_after > cancelling_before:
-                    external_cancel = True
-                    caught_external_cancel = exc
+                if current_task is not None and current_task.cancelling() > 0:
+                    if pending_control is None:
+                        pending_control = exc
                 else:
                     teardown_failed = True
             except Exception:  # noqa: BLE001 - isolate one stopper failure
                 teardown_failed = True
-            if current_task is not None and current_task.cancelling() > cancelling_before:
-                external_cancel = True
+            except BaseException as exc:  # noqa: BLE001 - defer process control
+                if pending_control is None:
+                    pending_control = exc
     finally:
         del entry.runtime_data
     if teardown_failed:
         _LOGGER.error("AUPU runtime teardown failed")
-    if external_cancel:
-        if caught_external_cancel is not None:
-            raise caught_external_cancel
-        raise asyncio.CancelledError
+    if pending_control is not None:
+        raise pending_control
 
 
 async def async_setup_entry(

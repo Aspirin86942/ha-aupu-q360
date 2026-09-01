@@ -689,6 +689,17 @@ class BlockingStopper:
         await asyncio.Event().wait()
 
 
+class YieldingStopper:
+    """Suspend once so an already-requested task cancellation is delivered."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def async_stop(self) -> None:
+        self.calls += 1
+        await asyncio.sleep(0)
+
+
 def test_forward_failure_stops_all_unique_stoppers_and_preserves_primary_error(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -887,12 +898,11 @@ def test_successful_unload_propagates_external_cancel(
     assert "private external cancellation detail" not in caplog.text
 
 
-@pytest.mark.parametrize("control_error_type", [KeyboardInterrupt, SystemExit])
-def test_teardown_propagates_control_base_exception(
-    control_error_type: type[BaseException],
+def test_teardown_preserves_cancel_requested_before_helper_entry(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Catch process-control exceptions being demoted to teardown failures."""
+    """Catch a pre-existing cancellation being logged and replaced by an empty one."""
     entry = FakeEntry(data=persisted_data())
     hass = FakeHass(FakeConfigEntries(entry))
     monkeypatch.setattr(
@@ -905,19 +915,119 @@ def test_teardown_propagates_control_base_exception(
         )
     )
     assert entry.runtime_data is not None
-    entry.runtime_data.stoppers.append(
-        Stopper(control_error_type("synthetic control exception"))
-    )
+    yielding_stopper = YieldingStopper()
+    remaining_stopper = Stopper()
+    entry.runtime_data.stoppers.extend([yielding_stopper, remaining_stopper])
 
-    async def assert_control_exception_propagates() -> None:
-        with pytest.raises(control_error_type):
+    async def cancel_before_teardown() -> None:
+        task = asyncio.current_task()
+        assert task is not None
+        task.cancel("marker")
+        with pytest.raises(asyncio.CancelledError) as raised:
             await _async_teardown_runtime(
                 cast(ConfigEntry[AupuRuntimeData], entry)
             )
+        assert raised.value.args == ("marker",)
 
-    _run(assert_control_exception_propagates())
+    with caplog.at_level(logging.ERROR, logger="custom_components.aupu_q360"):
+        _run(cancel_before_teardown())
 
+    assert yielding_stopper.calls == 1
+    assert remaining_stopper.calls == 1
     assert "runtime_data" not in entry.__dict__
+    assert "AUPU runtime teardown failed" not in caplog.text
+    assert "marker" not in caplog.text
+
+
+def test_teardown_preserves_first_of_multiple_external_cancellations(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Catch later task cancellations replacing the first observed cancellation."""
+    entry = FakeEntry(data=persisted_data())
+    hass = FakeHass(FakeConfigEntries(entry))
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.async_get_clientsession",
+        lambda _: object(),
+    )
+    _run(
+        async_setup_entry(
+            cast(HomeAssistant, hass), cast(ConfigEntry[AupuRuntimeData], entry)
+        )
+    )
+    assert entry.runtime_data is not None
+    first_blocking_stopper = BlockingStopper()
+    second_blocking_stopper = BlockingStopper()
+    remaining_stopper = Stopper()
+    entry.runtime_data.stoppers.extend(
+        [first_blocking_stopper, second_blocking_stopper, remaining_stopper]
+    )
+
+    async def cancel_twice_during_teardown() -> None:
+        task = asyncio.create_task(
+            _async_teardown_runtime(cast(ConfigEntry[AupuRuntimeData], entry))
+        )
+        await first_blocking_stopper.started.wait()
+        task.cancel("first cancellation marker")
+        await second_blocking_stopper.started.wait()
+        task.cancel("private later cancellation detail")
+        with pytest.raises(asyncio.CancelledError) as raised:
+            await task
+        assert raised.value.args == ("first cancellation marker",)
+
+    with caplog.at_level(logging.ERROR, logger="custom_components.aupu_q360"):
+        _run(cancel_twice_during_teardown())
+
+    assert first_blocking_stopper.calls == 1
+    assert second_blocking_stopper.calls == 1
+    assert remaining_stopper.calls == 1
+    assert "runtime_data" not in entry.__dict__
+    assert "AUPU runtime teardown failed" not in caplog.text
+    assert "first cancellation marker" not in caplog.text
+    assert "private later cancellation detail" not in caplog.text
+
+
+@pytest.mark.parametrize("control_error_type", [KeyboardInterrupt, SystemExit])
+def test_teardown_propagates_control_base_exception(
+    control_error_type: type[BaseException],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Catch process control aborting cleanup before later stoppers run."""
+    entry = FakeEntry(data=persisted_data())
+    hass = FakeHass(FakeConfigEntries(entry))
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.async_get_clientsession",
+        lambda _: object(),
+    )
+    _run(
+        async_setup_entry(
+            cast(HomeAssistant, hass), cast(ConfigEntry[AupuRuntimeData], entry)
+        )
+    )
+    assert entry.runtime_data is not None
+    control_error = control_error_type("private control exception detail")
+    control_stopper = Stopper(control_error)
+    remaining_stopper = Stopper()
+    entry.runtime_data.stoppers.extend(
+        [control_stopper, remaining_stopper]
+    )
+
+    async def assert_control_exception_propagates() -> None:
+        with pytest.raises(control_error_type) as raised:
+            await _async_teardown_runtime(
+                cast(ConfigEntry[AupuRuntimeData], entry)
+            )
+        assert raised.value is control_error
+
+    with caplog.at_level(logging.ERROR, logger="custom_components.aupu_q360"):
+        _run(assert_control_exception_propagates())
+
+    assert control_stopper.calls == 1
+    assert remaining_stopper.calls == 1
+    assert "runtime_data" not in entry.__dict__
+    assert "AUPU runtime teardown failed" not in caplog.text
+    assert "private control exception detail" not in caplog.text
 
 
 def test_successful_unload_stops_runtime_and_clears_reference(
