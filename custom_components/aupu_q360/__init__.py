@@ -38,7 +38,7 @@ async def _async_teardown_runtime(entry: ConfigEntry[AupuRuntimeData]) -> None:
             seen.add(identity)
             try:
                 await stopper.async_stop()
-            except Exception:  # noqa: BLE001 - continue independent runtime cleanup
+            except BaseException:  # noqa: BLE001 - isolate one stopper failure
                 teardown_failed = True
     finally:
         del entry.runtime_data

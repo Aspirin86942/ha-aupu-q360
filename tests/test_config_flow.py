@@ -712,6 +712,83 @@ def test_forward_failure_stops_all_unique_stoppers_and_preserves_primary_error(
     assert "private stopper detail" not in caplog.text
 
 
+def test_forward_failure_survives_cancelled_stopper(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Catch stopper cancellation masking the primary setup failure."""
+    entry = FakeEntry(data=persisted_data())
+    hass = FakeHass(FakeConfigEntries(entry))
+    primary_error = RuntimeError("synthetic forward failure")
+    cancelled_stopper = Stopper(
+        asyncio.CancelledError("private cancellation detail")
+    )
+    remaining_stopper = Stopper()
+    hass.config_entries.forward_stoppers = [cancelled_stopper, remaining_stopper]
+    hass.config_entries.forward_error = primary_error
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.async_get_clientsession",
+        lambda _: object(),
+    )
+
+    with (
+        caplog.at_level(logging.ERROR, logger="custom_components.aupu_q360"),
+        pytest.raises(RuntimeError, match="synthetic forward failure") as raised,
+    ):
+        _run(
+            async_setup_entry(
+                cast(HomeAssistant, hass),
+                cast(ConfigEntry[AupuRuntimeData], entry),
+            )
+        )
+
+    assert raised.value is primary_error
+    assert cancelled_stopper.calls == 1
+    assert remaining_stopper.calls == 1
+    assert "runtime_data" not in entry.__dict__
+    assert "AUPU runtime teardown failed" in caplog.text
+    assert "private cancellation detail" not in caplog.text
+
+
+def test_successful_unload_continues_after_cancelled_stopper(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Catch one cancelled stopper leaving later runtime resources active."""
+    entry = FakeEntry(data=persisted_data())
+    hass = FakeHass(FakeConfigEntries(entry))
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.async_get_clientsession",
+        lambda _: object(),
+    )
+    _run(
+        async_setup_entry(
+            cast(HomeAssistant, hass), cast(ConfigEntry[AupuRuntimeData], entry)
+        )
+    )
+    assert entry.runtime_data is not None
+    cancelled_stopper = Stopper(
+        asyncio.CancelledError("private cancellation detail")
+    )
+    remaining_stopper = Stopper()
+    entry.runtime_data.stoppers.extend([cancelled_stopper, remaining_stopper])
+
+    with caplog.at_level(logging.ERROR, logger="custom_components.aupu_q360"):
+        result = _run(
+            async_unload_entry(
+                cast(HomeAssistant, hass),
+                cast(ConfigEntry[AupuRuntimeData], entry),
+            )
+        )
+
+    assert result is True
+    assert cancelled_stopper.calls == 1
+    assert remaining_stopper.calls == 1
+    assert "runtime_data" not in entry.__dict__
+    assert "AUPU runtime teardown failed" in caplog.text
+    assert "private cancellation detail" not in caplog.text
+
+
 def test_successful_unload_stops_runtime_and_clears_reference(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
