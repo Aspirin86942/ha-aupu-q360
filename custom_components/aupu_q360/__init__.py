@@ -88,6 +88,7 @@ async def async_setup_entry(
         entry_id=entry.entry_id,
         credential=credential,
         api=entry.runtime_data.api,
+        async_request_reauth=lambda: entry.async_start_reauth(hass),
     )
     entry.runtime_data.coordinator = coordinator
     entry.runtime_data.stoppers.append(coordinator)

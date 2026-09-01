@@ -58,6 +58,11 @@ def _confirm_schema() -> vol.Schema:
     return vol.Schema({})
 
 
+def _reauth_manual_token_schema() -> vol.Schema:
+    """Request a new token without displaying the persisted credential."""
+    return vol.Schema({vol.Required(_CONF_TOKEN): _SECRET_TEXT})
+
+
 def _options_schema(current: AupuConfigEntryData) -> vol.Schema:
     """Build options without echoing the persisted token into the form."""
     return vol.Schema(
@@ -234,6 +239,50 @@ class AupuConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             )
         return self._create_entry(candidate)
 
+    async def async_step_reauth(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Enter the fixed manual-token recovery path."""
+        return await self.async_step_reauth_manual_token(user_input)
+
+    async def async_step_reauth_manual_token(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Atomically replace an expired or rejected token and reload once."""
+        entry = self._get_reauth_entry()
+        try:
+            current = AupuConfigEntryData.from_mapping(
+                entry.data, require_unexpired_token=False
+            )
+        except (AupuError, TypeError, ValueError):
+            return self.async_abort(reason="invalid_entry")
+        if user_input is None:
+            return self.async_show_form(
+                step_id="reauth_manual_token",
+                data_schema=_reauth_manual_token_schema(),
+            )
+
+        try:
+            token = _parse_token(user_input.get(_CONF_TOKEN))
+            if token == current.token:
+                raise ValueError
+            candidate = AupuConfigEntryData.from_mapping(
+                {**current.as_mapping(), _CONF_TOKEN: token}
+            )
+        except (AupuError, TypeError, ValueError) as exc:
+            return self.async_show_form(
+                step_id="reauth_manual_token",
+                data_schema=_reauth_manual_token_schema(),
+                errors={"base": _local_error(exc)},
+            )
+
+        if entry.update_listeners:
+            return self.async_update_and_abort(entry, data=candidate.as_mapping())
+        return self.async_update_reload_and_abort(
+            entry,
+            data=candidate.as_mapping(),
+        )
+
     def _create_entry(
         self, candidate: AupuConfigEntryData
     ) -> config_entries.ConfigFlowResult:
@@ -289,7 +338,7 @@ class AupuOptionsFlow(config_entries.OptionsFlow):
             return self.async_show_form(
                 step_id="confirm_wss", data_schema=_confirm_schema()
             )
-        return self._update_entry(candidate)
+        return await self._async_update_entry(candidate)
 
     async def async_step_confirm_wss(
         self, user_input: dict[str, Any] | None = None
@@ -312,13 +361,16 @@ class AupuOptionsFlow(config_entries.OptionsFlow):
                 data_schema=_confirm_schema(),
                 errors={"base": "cannot_connect"},
             )
-        return self._update_entry(candidate)
+        return await self._async_update_entry(candidate)
 
-    def _update_entry(
+    async def _async_update_entry(
         self, candidate: AupuConfigEntryData
     ) -> config_entries.ConfigFlowResult:
         """Apply one HA update only after the complete candidate is valid."""
-        self.hass.config_entries.async_update_entry(
+        has_update_listener = bool(self.config_entry.update_listeners)
+        updated = self.hass.config_entries.async_update_entry(
             self.config_entry, data=candidate.as_mapping()
         )
+        if updated and not has_update_listener:
+            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
         return self.async_create_entry(title="", data={})

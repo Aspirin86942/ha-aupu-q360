@@ -24,11 +24,14 @@ class AupuCoordinator:
         entry_id: str,
         credential: BearerCredential,
         api: AupuApiClient,
+        async_request_reauth: Callable[[], None],
     ) -> None:
         self._hass = hass
         self._entry_id = entry_id
         self._credential = credential
         self._api = api
+        self._async_request_reauth = async_request_reauth
+        self._reauth_requested = False
         self._is_on: bool | None = None
         self._assumed_state = False
         self._listeners: set[Callable[[], None]] = set()
@@ -49,6 +52,7 @@ class AupuCoordinator:
         self._stopped = False
         state = self._reconcile_repairs()
         if state is AuthState.EXPIRED:
+            self._request_reauth_once()
             raise ConfigEntryAuthFailed("Authentication failed")
 
     async def async_stop(self) -> None:
@@ -61,16 +65,26 @@ class AupuCoordinator:
         if self._stopped:
             raise HomeAssistantError("Light coordinator is stopped")
         if self._reconcile_repairs() is AuthState.EXPIRED:
+            self._request_reauth_once()
             raise ConfigEntryAuthFailed("Authentication failed")
 
         try:
             await self._api.set_light(is_on)
         except AupuAuthError:
+            self._request_reauth_once()
             raise ConfigEntryAuthFailed("Authentication failed") from None
         except AupuError:
             raise HomeAssistantError("Light control failed") from None
 
         self.async_apply_light_state(is_on=is_on, confirmed=False)
+
+    @callback
+    def _request_reauth_once(self) -> None:
+        """Request one entry reauth flow for this runtime without passing secrets."""
+        if self._reauth_requested:
+            return
+        self._reauth_requested = True
+        self._async_request_reauth()
 
     @callback
     def async_apply_light_state(self, *, is_on: bool, confirmed: bool) -> None:
@@ -95,7 +109,7 @@ class AupuCoordinator:
     def _reconcile_repairs(self) -> AuthState:
         """Make this entry's Repair issues match its current JWT state."""
         state = self._credential.state()
-        if not hasattr(self._hass, "data"):
+        if getattr(self._hass, "data", None) is None:
             return state
         expiring_id = f"{self._entry_id}_jwt_expiring"
         expired_id = f"{self._entry_id}_jwt_expired"

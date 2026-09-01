@@ -15,6 +15,13 @@
       "confirm_wss": {
         "title": "Confirm read-only connection check",
         "description": "Submitting this page authorizes exactly one read-only terminal-info request. It does not send a device control command."
+      },
+      "reauth_manual_token": {
+        "title": "Reauthenticate AUPU",
+        "description": "Enter a new valid Bearer JWT. The current token is never displayed.",
+        "data": {
+          "token": "New Bearer JWT"
+        }
       }
     },
     "error": {
@@ -27,7 +34,8 @@
     "abort": {
       "already_configured": "This device is already configured.",
       "invalid_state": "The pending configuration is no longer available.",
-      "invalid_entry": "The stored configuration is invalid."
+      "invalid_entry": "The stored configuration is invalid.",
+      "reauth_successful": "Reauthentication was successful."
     }
   },
   "options": {

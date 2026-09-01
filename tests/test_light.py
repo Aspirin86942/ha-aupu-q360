@@ -104,13 +104,20 @@ def _coordinator(
     credential: BearerCredential | None = None,
     *,
     entry_id: str = "synthetic-entry",
+    reauth_requests: list[None] | None = None,
 ) -> AupuCoordinator:
     hass = type("FakeRepairHass", (), {"data": {}})()
+
+    def request_reauth() -> None:
+        if reauth_requests is not None:
+            reauth_requests.append(None)
+
     return AupuCoordinator(
         hass=cast(HomeAssistant, hass),
         entry_id=entry_id,
         credential=credential or _credential(timedelta(days=2)),
         api=cast(AupuApiClient, api),
+        async_request_reauth=request_reauth,
     )
 
 
@@ -168,10 +175,12 @@ def test_expired_credential_blocks_api_and_creates_entry_scoped_repair(
 ) -> None:
     """Catch an expired JWT reaching the transport or colliding across entries."""
     api = FakeApi()
+    reauth_requests: list[None] = []
     coordinator = _coordinator(
         api,
         _credential(timedelta(hours=-1)),
         entry_id="entry-b",
+        reauth_requests=reauth_requests,
     )
 
     with pytest.raises(ConfigEntryAuthFailed):
@@ -192,6 +201,12 @@ def test_expired_credential_blocks_api_and_creates_entry_scoped_repair(
         )
     ]
 
+    with pytest.raises(ConfigEntryAuthFailed):
+        _run(coordinator.async_set_light(False))
+
+    assert api.calls == []
+    assert reauth_requests == [None]
+
 
 def test_remote_auth_failure_triggers_reauth_once_without_changing_state(
     issues: IssueRecorder,
@@ -199,14 +214,19 @@ def test_remote_auth_failure_triggers_reauth_once_without_changing_state(
     """Catch remote auth errors being retried or changing the optimistic state."""
     del issues
     api = FakeApi()
-    coordinator = _coordinator(api)
+    reauth_requests: list[None] = []
+    coordinator = _coordinator(api, reauth_requests=reauth_requests)
     coordinator.async_apply_light_state(is_on=False, confirmed=True)
     api.failure = AupuAuthError()
 
     with pytest.raises(ConfigEntryAuthFailed):
         _run(coordinator.async_set_light(True))
 
-    assert api.calls == [True]
+    with pytest.raises(ConfigEntryAuthFailed):
+        _run(coordinator.async_set_light(True))
+
+    assert api.calls == [True, True]
+    assert reauth_requests == [None]
     assert coordinator.is_on is False
     assert coordinator.assumed_state is False
 
@@ -313,6 +333,11 @@ class FakeEntry:
     unload_callbacks: list[Callable[[], Coroutine[Any, Any, None] | None]] = field(
         default_factory=list
     )
+    reauth_calls: int = 0
+
+    def async_start_reauth(self, hass: HomeAssistant) -> None:
+        del hass
+        self.reauth_calls += 1
 
     def add_update_listener(
         self,
@@ -493,6 +518,7 @@ def test_expired_setup_reconciles_repair_then_fails_auth_without_forwarding(
 
     assert config_entries.forwarded is None
     assert stop_calls == 1
+    assert entry.reauth_calls == 1
     assert "runtime_data" not in entry.__dict__
     assert issues.created[0][1:] == (
         "synthetic-entry_jwt_expired",

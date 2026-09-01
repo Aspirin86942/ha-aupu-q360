@@ -15,6 +15,13 @@
       "confirm_wss": {
         "title": "确认只读连接检查",
         "description": "提交本页将授权一次只读的终端信息请求，不会发送设备控制命令。"
+      },
+      "reauth_manual_token": {
+        "title": "重新认证奥普",
+        "description": "请输入新的有效 Bearer JWT。当前 Token 不会显示。",
+        "data": {
+          "token": "新的 Bearer JWT"
+        }
       }
     },
     "error": {
@@ -27,7 +34,8 @@
     "abort": {
       "already_configured": "该设备已配置。",
       "invalid_state": "待确认的配置已不存在。",
-      "invalid_entry": "已保存的配置无效。"
+      "invalid_entry": "已保存的配置无效。",
+      "reauth_successful": "重新认证成功。"
     }
   },
   "options": {

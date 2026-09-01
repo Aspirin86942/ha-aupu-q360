@@ -13,10 +13,11 @@ from dataclasses import dataclass, field
 from typing import Any, cast
 
 import pytest
-from homeassistant.config_entries import SOURCE_USER, ConfigEntry
+from homeassistant.config_entries import SOURCE_REAUTH, SOURCE_USER, ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.exceptions import ConfigEntryAuthFailed
 
 from custom_components.aupu_q360 import (
     _async_teardown_runtime,
@@ -97,6 +98,7 @@ class FakeEntry:
     unique_id: str | None = None
     entry_id: str = "synthetic-entry"
     domain: str = DOMAIN
+    title: str = "AUPU Q360"
     runtime_data: AupuRuntimeData | None = None
     update_listeners: list[Callable[[HomeAssistant, ConfigEntry[Any]], Coroutine[Any, Any, None]]] = field(
         default_factory=list
@@ -104,6 +106,12 @@ class FakeEntry:
     unload_callbacks: list[Callable[[], Coroutine[Any, Any, None] | None]] = field(
         default_factory=list
     )
+    reauth_calls: int = 0
+
+    def async_start_reauth(self, hass: HomeAssistant) -> None:
+        """Record one explicit reauth request without exposing entry data."""
+        del hass
+        self.reauth_calls += 1
 
     def add_update_listener(
         self,
@@ -158,6 +166,7 @@ class FakeConfigEntries:
         self.update_calls = 0
         self.reload_calls = 0
         self.listener_tasks: list[asyncio.Task[None]] = []
+        self.reload_tasks: list[asyncio.Task[bool]] = []
         self.forwarded: tuple[Platform, ...] | None = None
         self.forward_error: BaseException | None = None
         self.forward_stoppers: list[Any] = []
@@ -212,6 +221,9 @@ class FakeConfigEntries:
         if self.listener_tasks:
             await asyncio.gather(*self.listener_tasks)
             self.listener_tasks.clear()
+        if self.reload_tasks:
+            await asyncio.gather(*self.reload_tasks)
+            self.reload_tasks.clear()
 
     async def async_reload(self, entry_id: str) -> bool:
         """Mirror the integration-owned effects of one HA reload."""
@@ -219,10 +231,15 @@ class FakeConfigEntries:
         assert self.hass is not None
         self.reload_calls += 1
         entry = cast(ConfigEntry[AupuRuntimeData], self.entry)
-        if not await async_unload_entry(self.hass, entry):
-            return False
-        await self.entry.async_process_on_unload()
+        if self.entry.runtime_data is not None:
+            if not await async_unload_entry(self.hass, entry):
+                return False
+            await self.entry.async_process_on_unload()
         return await async_setup_entry(self.hass, entry)
+
+    def async_schedule_reload(self, entry_id: str) -> None:
+        """Schedule the same reload requested by HA's reauth helper."""
+        self.reload_tasks.append(asyncio.create_task(self.async_reload(entry_id)))
 
     async def async_forward_entry_setups(
         self, entry: ConfigEntry[Any], platforms: tuple[Platform, ...]
@@ -247,6 +264,7 @@ class FakeHass:
     """Minimal Home Assistant boundary for direct flow-step calls."""
 
     config_entries: FakeConfigEntries
+    data: object | None = None
 
     def __post_init__(self) -> None:
         self.config_entries.hass = cast(HomeAssistant, self)
@@ -271,6 +289,13 @@ def prepare_options_flow(entry: FakeEntry) -> tuple[AupuOptionsFlow, FakeHass]:
     flow.handler = entry.entry_id
     flow.flow_id = "synthetic-options-flow"
     flow.context = {"source": "init"}
+    return flow, hass
+
+
+def prepare_reauth_flow(entry: FakeEntry) -> tuple[AupuConfigFlow, FakeHass]:
+    """Initialize the standard HA reauth context for direct step calls."""
+    flow, hass = prepare_config_flow(entry)
+    flow.context = {"source": SOURCE_REAUTH, "entry_id": entry.entry_id}
     return flow, hass
 
 
@@ -508,12 +533,18 @@ def test_options_invalid_token_keeps_loaded_runtime_unchanged(
     assert entry.runtime_data is old_runtime
 
 
-def test_options_can_replace_an_expired_stored_token() -> None:
+def test_options_can_replace_an_expired_stored_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Catch an expired old credential blocking the manual recovery path."""
     expired = make_synthetic_jwt({"exp": 1})
     old_data = persisted_data(token=expired)
     entry = FakeEntry(data=dict(old_data))
     flow, hass = prepare_options_flow(entry)
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.async_get_clientsession",
+        lambda _: object(),
+    )
     replacement = make_synthetic_jwt(
         {"exp": int(time.time()) + 7 * 24 * 60 * 60, "sub": "replacement"}
     )
@@ -527,13 +558,21 @@ def test_options_can_replace_an_expired_stored_token() -> None:
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert entry.data == {**old_data, "token": replacement}
     assert hass.config_entries.update_calls == 1
+    assert hass.config_entries.reload_calls == 1
+    assert entry.runtime_data is not None
 
 
-def test_options_valid_token_and_phone_update_atomically() -> None:
+def test_options_valid_token_and_phone_update_atomically(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Catch successful options that fail to normalize all persisted fields together."""
     old_data = persisted_data()
     entry = FakeEntry(data=dict(old_data))
     flow, hass = prepare_options_flow(entry)
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.async_get_clientsession",
+        lambda _: object(),
+    )
     new_token = valid_token()
 
     result = _run(
@@ -553,6 +592,7 @@ def test_options_valid_token_and_phone_update_atomically() -> None:
         "phone": "13800000000",
     }
     assert hass.config_entries.update_calls == 1
+    assert hass.config_entries.reload_calls == 1
 
 
 def test_loaded_options_update_reloads_runtime_once(
@@ -617,6 +657,10 @@ def test_options_enabling_wss_waits_for_confirmation(
         "custom_components.aupu_q360.config_flow._async_verify_terminal_info",
         verifier,
     )
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.async_get_clientsession",
+        lambda _: object(),
+    )
 
     confirmation = _run(
         flow.async_step_init({"token": valid_token(), "phone": "", "use_wss": True})
@@ -634,7 +678,174 @@ def test_options_enabling_wss_waits_for_confirmation(
     assert entry.data["use_wss"] is True
     assert entry.data["user_uuid"] == "synthetic-user-uuid"
     assert hass.config_entries.update_calls == 1
+    assert hass.config_entries.reload_calls == 1
     assert calls == 1
+
+
+def test_manual_reauth_accepts_only_a_new_valid_token_and_reloads_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch manual reauth saving invalid, old, or extra secret material."""
+    expired = make_synthetic_jwt({"exp": 1})
+    old_data = persisted_data(token=expired)
+    entry = FakeEntry(data=dict(old_data))
+    flow, hass = prepare_reauth_flow(entry)
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.async_get_clientsession",
+        lambda _: object(),
+    )
+
+    first = _run(flow.async_step_reauth())
+
+    assert first["type"] is FlowResultType.FORM
+    assert first["step_id"] == "reauth_manual_token"
+
+    invalid = _run(flow.async_step_reauth_manual_token({"token": expired}))
+
+    assert invalid["type"] is FlowResultType.FORM
+    assert invalid["errors"] == {"base": "expired_token"}
+    assert entry.data == old_data
+    assert hass.config_entries.update_calls == 0
+    assert hass.config_entries.reload_calls == 0
+
+    replacement = make_synthetic_jwt(
+        {"exp": int(time.time()) + 7 * 24 * 60 * 60, "sub": "manual-reauth"}
+    )
+    success = _run(flow.async_step_reauth_manual_token({"token": replacement}))
+    _run(hass.config_entries.async_wait_for_update_listeners())
+
+    assert success["type"] is FlowResultType.ABORT
+    assert success["reason"] == "reauth_successful"
+    assert entry.data == {**old_data, "token": replacement}
+    assert set(entry.data) == set(old_data)
+    assert hass.config_entries.update_calls == 1
+    assert hass.config_entries.reload_calls == 1
+
+
+def test_loaded_manual_reauth_rejects_current_token_then_listener_reloads_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch loaded reauth accepting the old token or scheduling a second reload."""
+    old_data = persisted_data()
+    entry = FakeEntry(data=dict(old_data))
+    hass = FakeHass(FakeConfigEntries(entry))
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.async_get_clientsession",
+        lambda _: object(),
+    )
+    _run(
+        async_setup_entry(
+            cast(HomeAssistant, hass),
+            cast(ConfigEntry[AupuRuntimeData], entry),
+        )
+    )
+    old_runtime = entry.runtime_data
+    assert old_runtime is not None
+    flow = AupuConfigFlow()
+    flow.hass = cast(HomeAssistant, hass)
+    flow.handler = DOMAIN
+    flow.flow_id = "loaded-manual-reauth"
+    flow.context = {"source": SOURCE_REAUTH, "entry_id": entry.entry_id}
+
+    unchanged = _run(
+        flow.async_step_reauth_manual_token({"token": old_data["token"]})
+    )
+
+    assert unchanged["type"] is FlowResultType.FORM
+    assert unchanged["errors"] == {"base": "invalid_token"}
+    assert entry.data == old_data
+    assert entry.runtime_data is old_runtime
+    assert hass.config_entries.update_calls == 0
+    assert hass.config_entries.reload_calls == 0
+
+    replacement = make_synthetic_jwt(
+        {"exp": int(time.time()) + 7 * 24 * 60 * 60, "sub": "loaded-reauth"}
+    )
+    success = _run(
+        flow.async_step_reauth_manual_token({"token": replacement})
+    )
+    _run(hass.config_entries.async_wait_for_update_listeners())
+
+    assert success["type"] is FlowResultType.ABORT
+    assert success["reason"] == "reauth_successful"
+    assert hass.config_entries.update_calls == 1
+    assert hass.config_entries.reload_calls == 1
+    assert entry.runtime_data is not None
+    assert entry.runtime_data is not old_runtime
+    assert entry.runtime_data.credential.authorization_header == f"Bearer {replacement}"
+
+
+def test_failed_expired_setup_options_recovery_reloads_and_clears_repairs_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch failed entries having no listener to reload a replacement token."""
+    expired = make_synthetic_jwt({"exp": 1})
+    entry = FakeEntry(data=persisted_data(token=expired))
+    hass = FakeHass(FakeConfigEntries(entry))
+    hass.data = {}
+    active_issues: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def create_issue(
+        hass_arg: HomeAssistant,
+        domain: str,
+        issue_id: str,
+        **kwargs: Any,
+    ) -> None:
+        del hass_arg
+        active_issues[(domain, issue_id)] = kwargs
+
+    def delete_issue(hass_arg: HomeAssistant, domain: str, issue_id: str) -> None:
+        del hass_arg
+        active_issues.pop((domain, issue_id), None)
+
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.coordinator.ir.async_create_issue",
+        create_issue,
+    )
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.coordinator.ir.async_delete_issue",
+        delete_issue,
+    )
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.async_get_clientsession",
+        lambda _: object(),
+    )
+
+    with pytest.raises(ConfigEntryAuthFailed, match="Authentication failed"):
+        _run(
+            async_setup_entry(
+                cast(HomeAssistant, hass),
+                cast(ConfigEntry[AupuRuntimeData], entry),
+            )
+        )
+
+    assert (DOMAIN, "synthetic-entry_jwt_expired") in active_issues
+    assert "runtime_data" not in entry.__dict__
+    assert entry.update_listeners == []
+    assert entry.reauth_calls == 1
+
+    replacement = make_synthetic_jwt(
+        {"exp": int(time.time()) + 7 * 24 * 60 * 60, "sub": "options-recovery"}
+    )
+    flow = AupuOptionsFlow()
+    flow.hass = cast(HomeAssistant, hass)
+    flow.handler = entry.entry_id
+    flow.flow_id = "failed-options-recovery"
+    flow.context = {"source": "init"}
+    result = _run(
+        flow.async_step_init(
+            {"token": replacement, "phone": "", "use_wss": False}
+        )
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert hass.config_entries.update_calls == 1
+    assert hass.config_entries.reload_calls == 1
+    assert entry.runtime_data is not None
+    assert entry.runtime_data.credential.authorization_header == f"Bearer {replacement}"
+    assert hass.config_entries.forwarded == (Platform.LIGHT,)
+    assert active_issues == {}
+    assert len(entry.update_listeners) == 1
 
 
 def test_setup_builds_runtime_and_forwards_light_without_network(
