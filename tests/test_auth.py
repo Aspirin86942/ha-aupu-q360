@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import sys
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -54,12 +56,44 @@ def test_existing_bearer_prefix_is_not_duplicated() -> None:
     assert credential.authorization_header == f"Bearer {token}"
 
 
-def test_token_without_exp_has_no_local_expiry_hint() -> None:
-    """Removing exp must not fabricate a local expiration time."""
-    credential = BearerCredential.parse(make_synthetic_jwt({"sub": "synthetic"}))
+def _assert_rejected_without_token_disclosure(make_token: Callable[[], str]) -> None:
+    """Assert a fixed auth failure without letting pytest render a credential."""
+    token = make_token()
+    try:
+        BearerCredential.parse(token)
+    except AupuAuthError as error:
+        diagnostics = [str(error), repr(error)]
+        current: BaseException | None = error.__cause__ or error.__context__
+        while current is not None:
+            diagnostics.extend((str(current), repr(current)))
+            current = current.__cause__ or current.__context__
+        if any(token in diagnostic for diagnostic in diagnostics):
+            pytest.fail("Bearer credential appeared in authentication diagnostics")
+    else:
+        pytest.fail("Invalid Bearer credential was accepted")
 
-    assert credential.expires_at is None
-    assert credential.state(now=datetime(2023, 11, 15, tzinfo=UTC)) is AuthState.READY
+
+def test_token_without_exp_is_rejected() -> None:
+    """Deleting required-exp validation must fail this fail-closed behavior."""
+    _assert_rejected_without_token_disclosure(lambda: make_synthetic_jwt({"sub": "synthetic"}))
+
+
+def test_token_with_null_exp_is_rejected() -> None:
+    """Treating JSON null like an optional expiry must fail closed."""
+    _assert_rejected_without_token_disclosure(lambda: make_synthetic_jwt({"exp": None}))
+
+
+@pytest.mark.parametrize("exp", [True, "1700086400", math.nan, math.inf])
+def test_token_with_invalid_exp_is_rejected(exp: object) -> None:
+    """Accepting non-numeric or non-finite expiry values would weaken lifecycle checks."""
+    _assert_rejected_without_token_disclosure(lambda: make_synthetic_jwt({"exp": exp}))
+
+
+def test_repeated_bearer_prefix_is_rejected() -> None:
+    """A second prefix must be rejected instead of leaking into an HTTP header."""
+    _assert_rejected_without_token_disclosure(
+        lambda: f"Bearer Bearer {make_synthetic_jwt({'exp': 1_700_086_400})}"
+    )
 
 
 def test_invalid_payload_raises_redacted_auth_error() -> None:
@@ -70,18 +104,7 @@ def test_invalid_payload_raises_redacted_auth_error() -> None:
         make_synthetic_jwt("not-a-json-object"),
     )
     for token in malformed_tokens:
-        with pytest.raises(AupuAuthError) as exc_info:
-            BearerCredential.parse(token)
-
-        error = exc_info.value
-        if (
-            error.error_code != "authentication_failed"
-            or error.message != "Authentication failed"
-            or error.retryable
-            or token in str(error)
-            or token in repr(error)
-        ):
-            pytest.fail("Malformed Bearer credential diagnostics were not redacted and stable")
+        _assert_rejected_without_token_disclosure(lambda token=token: token)
 
 
 def test_token_is_expiring_during_last_twenty_four_hours() -> None:

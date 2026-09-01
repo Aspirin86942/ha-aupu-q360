@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import math
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -38,7 +39,7 @@ class BearerCredential:
     def parse(cls, value: str) -> BearerCredential:
         """Parse a JWT payload for its optional expiry without trusting its claims."""
         token = value.removeprefix("Bearer ") if isinstance(value, str) else ""
-        if not token:
+        if not token or token.startswith("Bearer "):
             raise _invalid_credential()
 
         parts = token.split(".")
@@ -47,9 +48,8 @@ class BearerCredential:
 
         try:
             payload = _decode_payload(parts[1])
-            exp = payload.get("exp")
-            expires_at = _expiry_from_exp(exp) if exp is not None else None
-        except (TypeError, ValueError, OverflowError, json.JSONDecodeError, binascii.Error):
+            expires_at = _expiry_from_exp(payload["exp"])
+        except (KeyError, TypeError, ValueError, OverflowError, json.JSONDecodeError, binascii.Error):
             raise _invalid_credential() from None
         return cls(_token=token, expires_at=expires_at)
 
@@ -90,6 +90,8 @@ def _expiry_from_exp(value: object) -> datetime:
     """Convert a numeric unverified exp timestamp into a local UTC hint."""
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise TypeError("JWT exp must be numeric")
+    if not math.isfinite(value):
+        raise ValueError("JWT exp must be finite")
     return datetime.fromtimestamp(value, UTC)
 
 
