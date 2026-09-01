@@ -7,10 +7,14 @@ dependencies = []
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "ha_runtime: Linux-only tests using the real Home Assistant pytest runtime",
+]
 
 [tool.ruff]
 target-version = "py313"
 line-length = 100
+extend-exclude = ["docs/superpowers"]
 
 [tool.mypy]
 python_version = "3.13"
@@ -18,6 +22,7 @@ strict = true
 
 [dependency-groups]
 dev = [
+    "homeassistant",
     "mypy>=2.3.1",
     "pytest>=6.2.3",
     "pytest-asyncio>=0.20.3",

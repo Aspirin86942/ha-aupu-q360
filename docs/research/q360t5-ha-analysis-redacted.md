@@ -259,3 +259,23 @@ state.reported.{thing-id}.2.properties.1 = false
 - Reqable 当前用户 CA、原始 HAR 和临时目录仍保留；删除前必须再次征得用户确认。
 
 本报告和不含秘密的签名源码可以复制给另一台电脑的 Codex。HA 实际运行还需要私有常量、设备参数和合法 JWT；不要通过聊天、Git、Issue 或公开云盘传输它们。建议由用户通过本地加密压缩包或离线介质直接复制到另一台受信任电脑，并放入 HA 的私有配置目录。不要复制原始 HAR、Cookie 或 WSS 签名。
+
+## 九、脱敏实现与离线验收结论
+
+自定义集成现已实现本地配置、JWT 到期 Repair、短信或手工 Token 重新认证、单一照明实体、
+HTTPS 单次控制、可选 WSS 状态反馈、标准诊断和卸载清理。公开代码与测试只使用合成凭据和
+fake transport；没有执行真实短信、登录、照明控制或 AWS I/O。
+
+任务 11 提交前的本地验证状态如下：
+
+- Windows default 离线套件为 `233/233`；Ruff check、Ruff format check 与生产模块 mypy 通过。
+- 私有签名器复核只记录安全计数 `7/7`，不记录候选值或原始请求。
+- tracked-file 秘密扫描覆盖 44 个文件，私有比对源可用，敏感命中为 0。
+- Linux-only HA runtime 测试源码已覆盖真实 flow/config-entry/entity service/Repair/unload/
+  diagnostics manager 边界以及 fake WSS 生命周期；受 Windows `fcntl` 边界限制，本机仅完成
+  语法与静态检查，没有执行这些测试，也不把它们报告为 PASS。
+
+剩余风险与发布门保持不变：尚无已确认的 GitHub owner/repository URL，也未创建远程仓库、
+push、Release、部署或执行 HACS 实机安装。HACS/hassfest 的远程结果与 Linux HA runtime
+结果只能由后续获授权的首次 GitHub Actions 实证。真实短信发送、手机号登录和照明控制也都
+需要用户另行逐项授权；厂商仍可能更新私有云 API、签名格式或 WSS 策略。

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import socket
 import subprocess
 import sys
@@ -13,6 +14,10 @@ import pytest
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
+
+# The HA pytest plugin imports Linux-only runtime modules.  Default/offline test
+# collection must not import those modules on Windows or without the explicit CI gate.
+collect_ignore_glob = [] if os.environ.get("AUPU_RUN_HA_RUNTIME") == "1" else ["ha_runtime/*"]
 
 
 @pytest.fixture

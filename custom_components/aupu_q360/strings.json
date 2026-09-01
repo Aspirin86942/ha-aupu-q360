@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Configure AUPU Q360",
-        "description": "All values are validated locally. WSS is disabled by default and this step does not contact AUPU.",
+        "description": "All values are validated locally. WSS is disabled by default and this step does not contact AUPU. The JWT persists across HA restarts but is never refreshed automatically.",
         "data": {
           "signer_json": "Private signer JSON",
           "token": "Bearer JWT",
@@ -25,14 +25,14 @@
       },
       "reauth_method": {
         "title": "Reauthenticate AUPU",
-        "description": "Choose a recovery method. Your current token is never displayed.",
+        "description": "Choose SMS recovery or a manual Token. Your current token is never displayed.",
         "data": {
           "method": "Recovery method"
         }
       },
       "reauth_sms_send": {
         "title": "Send verification code",
-        "description": "Submitting sends one SMS verification code. The number is only saved when selected.",
+        "description": "Submitting sends one SMS verification code. Sending is limited to once per 60 seconds, and the number is only saved when selected.",
         "data": {
           "phone": "Phone number",
           "save_phone": "Save phone number locally"
@@ -40,7 +40,7 @@
       },
       "reauth_sms_code": {
         "title": "Enter verification code",
-        "description": "Enter the six-digit SMS verification code. It expires locally after five minutes.",
+        "description": "Enter the six-digit SMS verification code. It expires locally after five minutes and is never saved.",
         "data": {
           "code": "SMS verification code"
         }
@@ -94,11 +94,11 @@
   "issues": {
     "jwt_expiring": {
       "title": "AUPU token expires soon",
-      "description": "The local AUPU token expires within 24 hours. Update it in the integration options to keep control available."
+      "description": "The local AUPU token expires within 24 hours. Use SMS reauthentication or enter a manual Token to keep control available."
     },
     "jwt_expired": {
       "title": "AUPU token expired",
-      "description": "The local AUPU token has expired. Reauthenticate or update it in the integration options before controlling the light."
+      "description": "The local AUPU token has expired. Use SMS reauthentication or enter a manual Token before controlling the light."
     }
   }
 }

@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "配置奥普 Q360",
-        "description": "所有值仅在本地校验。WSS 默认关闭，本步骤不会连接奥普服务。",
+        "description": "所有值仅在本地校验。WSS 默认关闭，本步骤不会连接奥普服务。JWT 会随 HA 重启持久保留，但集成绝不会自动刷新。",
         "data": {
           "signer_json": "私有签名参数 JSON",
           "token": "Bearer JWT",
@@ -25,14 +25,14 @@
       },
       "reauth_method": {
         "title": "重新认证奥普",
-        "description": "请选择恢复方式。当前 Token 不会显示。",
+        "description": "请选择短信恢复或手工 Token。当前 Token 不会显示。",
         "data": {
           "method": "恢复方式"
         }
       },
       "reauth_sms_send": {
         "title": "发送验证码",
-        "description": "提交后才会发送一条短信验证码；仅在勾选时保存手机号。",
+        "description": "提交后才会发送一条短信验证码；60 秒内限发一次，且仅在勾选时保存手机号。",
         "data": {
           "phone": "手机号",
           "save_phone": "在本地保存手机号"
@@ -40,7 +40,7 @@
       },
       "reauth_sms_code": {
         "title": "输入验证码",
-        "description": "请输入六位短信验证码；验证码在本地五分钟后过期。",
+        "description": "请输入六位短信验证码；验证码在本地五分钟后过期且绝不会保存。",
         "data": {
           "code": "短信验证码"
         }
@@ -94,11 +94,11 @@
   "issues": {
     "jwt_expiring": {
       "title": "奥普 Token 即将过期",
-      "description": "本地保存的奥普 Token 将在 24 小时内过期。请在集成选项中更新，以保持照明控制可用。"
+      "description": "本地保存的奥普 Token 将在 24 小时内过期。请使用短信重新认证或输入手工 Token，以保持照明控制可用。"
     },
     "jwt_expired": {
       "title": "奥普 Token 已过期",
-      "description": "本地保存的奥普 Token 已过期。重新认证或在集成选项中更新后才能控制照明。"
+      "description": "本地保存的奥普 Token 已过期。使用短信重新认证或输入手工 Token 后才能控制照明。"
     }
   }
 }

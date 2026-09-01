@@ -34,11 +34,12 @@ _DIAGNOSTIC_KEYS = {
 
 
 def _credential(expires_at: datetime | None) -> BearerCredential:
-    token = (
-        "syntheticHeaderSegment."
-        "syntheticPayloadSegment."
-        "syntheticSignatureSegment"
+    segments = (
+        "syntheticHeaderSegment",
+        "syntheticPayloadSegment",
+        "syntheticSignatureSegment",
     )
+    token = ".".join(segments)
     return BearerCredential(_token=token, expires_at=expires_at)
 
 
@@ -290,10 +291,13 @@ def test_secret_scanner_detects_each_regex_without_echoing_content(
         "phone": b"139" + b"1234" + b"5678",
         "private_key": b"-----BEGIN " + b"PRIVATE KEY-----",
         "app_authorization": (
-            b"App-" + b"Authorization: app=production;ts=1760000000;signature="
+            b"App-"
+            + b"Authorization: app=production;ts=1760000000;signature="
             + b"QWxhZGRpbjpPcGVuU2VzYW1lU2lnbmF0dXJlMTIzNDU2Nzg5MA=="
         ),
-        "assignment": b"client_" + b"secret = \"" + b"opaqueAssignmentValue9876543210" + b"\"",
+        "assignment": (
+            b"client_" + b"secret" + b' = "' + b"opaqueAssignmentValue9876543210" + b'"'
+        ),
     }
     matching_line = b"do-not-print-matching-line " + b" | ".join(values.values())
     _track(git_repository, "leaks.txt", matching_line)
@@ -439,8 +443,7 @@ def test_secret_scanner_allows_only_known_synthetic_values_and_skips_untracked_f
     _track(
         git_repository,
         "uv.lock",
-        b"size = 139" + b"1234" + b"5678\n"
-        b"hash = abcdefghijk.lmnopqrstuv.wxyzABCDEFG\n",
+        b"size = 139" + b"1234" + b"5678\nhash = abcdefghijk.lmnopqrstuv.wxyzABCDEFG\n",
     )
     private_value = b".".join((b"OutsideHeader123", b"OutsidePayload456", b"OutsideSignature789"))
     private_file = git_repository / ".private" / "outside.txt"
@@ -484,9 +487,7 @@ def test_secret_scanner_compares_private_json_and_har_values_only_in_memory(
                             {
                                 "request": {
                                     "url": "https://example.invalid/path",
-                                    "headers": [
-                                        {"name": "Authorization", "value": header_value}
-                                    ],
+                                    "headers": [{"name": "Authorization", "value": header_value}],
                                 }
                             }
                         ]
@@ -548,9 +549,7 @@ def test_low_information_private_candidate_matches_each_exact_document_context(
     encoded_candidate = quote(candidate, safe="")
     serialized = {
         "json_document": json.dumps({field_name: candidate}).encode(),
-        "url_query": (
-            f"https://example.invalid/path?{field_name}={encoded_candidate}"
-        ).encode(),
+        "url_query": (f"https://example.invalid/path?{field_name}={encoded_candidate}").encode(),
         "form_body": f"{field_name}={encoded_candidate}&public=value".encode(),
     }[serialization]
     _track(git_repository, "controlled-context.txt", serialized)
@@ -586,8 +585,7 @@ def test_low_information_form_requires_exact_parameter_name_and_value(
     )
     encoded_candidate = quote(candidate, safe="")
     mismatches = (
-        f"other{field_name}={encoded_candidate}"
-        f"&{field_name}={encoded_candidate}Suffix"
+        f"other{field_name}={encoded_candidate}&{field_name}={encoded_candidate}Suffix"
     ).encode()
     _track(git_repository, "public-form.txt", mismatches)
 
