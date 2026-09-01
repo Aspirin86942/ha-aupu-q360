@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
+from time import monotonic
 from typing import Any, cast
 
 import voluptuous as vol
@@ -28,6 +29,12 @@ _CONF_TAG = "tag"
 _CONF_USE_WSS = "use_wss"
 _CONF_USER_UUID = "user_uuid"
 _CONF_PHONE = "phone"
+_CONF_METHOD = "method"
+_CONF_SMS_CODE = "code"
+_CONF_SAVE_PHONE = "save_phone"
+
+_SMS_RESEND_SECONDS = 60
+_SMS_CODE_TTL_SECONDS = 5 * 60
 
 _TERMINAL_INFO_PATH = "/authserver/auth/user/terminal/info"
 _ENTRY_TITLE = "AUPU Q360"
@@ -63,6 +70,28 @@ def _reauth_manual_token_schema() -> vol.Schema:
     return vol.Schema({vol.Required(_CONF_TOKEN): _SECRET_TEXT})
 
 
+def _reauth_method_schema() -> vol.Schema:
+    """Offer the two supported recovery methods without exposing credentials."""
+    return vol.Schema({vol.Required(_CONF_METHOD): vol.In(("sms", "manual_token"))})
+
+
+def _reauth_sms_send_schema(current: AupuConfigEntryData) -> vol.Schema:
+    """Collect a phone number only after the user chooses SMS recovery."""
+    return vol.Schema(
+        {
+            vol.Required(_CONF_PHONE, default=current.phone or ""): selector.TextSelector(
+                selector.TextSelectorConfig(type=selector.TextSelectorType.TEL)
+            ),
+            vol.Optional(_CONF_SAVE_PHONE, default=False): selector.BooleanSelector(),
+        }
+    )
+
+
+def _reauth_sms_code_schema() -> vol.Schema:
+    """Collect the ephemeral verification code without displaying it later."""
+    return vol.Schema({vol.Required(_CONF_SMS_CODE): _SECRET_TEXT})
+
+
 def _options_schema(current: AupuConfigEntryData) -> vol.Schema:
     """Build options without echoing the persisted token into the form."""
     return vol.Schema(
@@ -88,12 +117,41 @@ class _InvalidDeviceError(ValueError):
     """Signal device validation without retaining submitted identifiers."""
 
 
+class _InvalidPhoneError(ValueError):
+    """Signal local phone validation without retaining the submitted value."""
+
+
+class _InvalidSmsCodeError(ValueError):
+    """Signal local code validation without retaining the submitted value."""
+
+
 def _parse_token(value: object) -> str:
     """Return one canonical, unexpired JWT representation."""
     credential = BearerCredential.parse(cast(str, value))
     if credential.state() is AuthState.EXPIRED:
         raise _ExpiredTokenError
     return credential.authorization_header.removeprefix("Bearer ")
+
+
+def _parse_phone(value: object) -> str:
+    """Require the supported eleven-digit local phone representation."""
+    if not isinstance(value, str):
+        raise _InvalidPhoneError
+    phone = value.strip()
+    if len(phone) != 11 or not all("0" <= character <= "9" for character in phone):
+        raise _InvalidPhoneError
+    return phone
+
+
+def _parse_sms_code(value: object) -> str:
+    """Require exactly six digits and keep the value in the flow only."""
+    if (
+        not isinstance(value, str)
+        or len(value) != 6
+        or not all("0" <= character <= "9" for character in value)
+    ):
+        raise _InvalidSmsCodeError
+    return value
 
 
 def _parse_user_input(user_input: Mapping[str, Any]) -> AupuConfigEntryData:
@@ -145,6 +203,10 @@ def _local_error(exc: Exception) -> str:
         return "expired_token"
     if isinstance(exc, _InvalidDeviceError):
         return "invalid_device"
+    if isinstance(exc, _InvalidPhoneError):
+        return "invalid_phone"
+    if isinstance(exc, _InvalidSmsCodeError):
+        return "invalid_sms_code"
     return "invalid_token"
 
 
@@ -179,6 +241,9 @@ class AupuConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     def __init__(self) -> None:
         self._pending: AupuConfigEntryData | None = None
+        self._reauth_phone: str | None = None
+        self._reauth_save_phone = False
+        self._sms_sent_at: float | None = None
 
     @staticmethod
     @callback
@@ -242,8 +307,132 @@ class AupuConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_reauth(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        """Enter the fixed manual-token recovery path."""
-        return await self.async_step_reauth_manual_token(user_input)
+        """Ignore HA's initial entry payload and let the user select a recovery method."""
+        del user_input
+        return await self.async_step_reauth_method()
+
+    async def async_step_reauth_method(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Select explicit SMS or manual-token recovery without sending a request."""
+        if user_input is None:
+            return self.async_show_form(
+                step_id="reauth_method", data_schema=_reauth_method_schema()
+            )
+        method = user_input.get(_CONF_METHOD)
+        if method == "sms":
+            return await self.async_step_reauth_sms_send()
+        if method == "manual_token":
+            return await self.async_step_reauth_manual_token()
+        return self.async_show_form(
+            step_id="reauth_method",
+            data_schema=_reauth_method_schema(),
+            errors={"base": "invalid_state"},
+        )
+
+    async def async_step_reauth_sms_send(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Send one SMS only after submission and remember its local expiry window."""
+        entry = self._get_reauth_entry()
+        try:
+            current = AupuConfigEntryData.from_mapping(
+                entry.data, require_unexpired_token=False
+            )
+        except (AupuError, TypeError, ValueError):
+            return self.async_abort(reason="invalid_entry")
+        if user_input is None:
+            return self.async_show_form(
+                step_id="reauth_sms_send", data_schema=_reauth_sms_send_schema(current)
+            )
+        try:
+            phone = _parse_phone(user_input.get(_CONF_PHONE))
+            save_phone = user_input.get(_CONF_SAVE_PHONE, False)
+            if not isinstance(save_phone, bool):
+                raise _InvalidPhoneError
+        except (TypeError, ValueError) as exc:
+            return self.async_show_form(
+                step_id="reauth_sms_send",
+                data_schema=_reauth_sms_send_schema(current),
+                errors={"base": _local_error(exc)},
+            )
+        now = monotonic()
+        if self._sms_sent_at is not None and now - self._sms_sent_at < _SMS_RESEND_SECONDS:
+            return self.async_show_form(
+                step_id="reauth_sms_send",
+                data_schema=_reauth_sms_send_schema(current),
+                errors={"base": "sms_rate_limited"},
+            )
+        api = AupuApiClient(
+            session=async_get_clientsession(self.hass),
+            signer=AppAuthorizationSigner(current.secrets),
+            credential=current.credential,
+            device=current.device,
+        )
+        try:
+            await api.request_sms_code(phone=phone)
+        except (AupuError, TypeError, ValueError):
+            return self.async_show_form(
+                step_id="reauth_sms_send",
+                data_schema=_reauth_sms_send_schema(current),
+                errors={"base": "cannot_send_sms"},
+            )
+        self._reauth_phone = phone
+        self._reauth_save_phone = save_phone
+        self._sms_sent_at = now
+        return await self.async_step_reauth_sms_code()
+
+    async def async_step_reauth_sms_code(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Exchange one valid code and atomically replace only complete credentials."""
+        if self._reauth_phone is None or self._sms_sent_at is None:
+            return self.async_abort(reason="invalid_state")
+        if user_input is None:
+            return self.async_show_form(
+                step_id="reauth_sms_code", data_schema=_reauth_sms_code_schema()
+            )
+        if monotonic() - self._sms_sent_at > _SMS_CODE_TTL_SECONDS:
+            return self.async_show_form(
+                step_id="reauth_sms_code",
+                data_schema=_reauth_sms_code_schema(),
+                errors={"base": "sms_code_expired"},
+            )
+        try:
+            code = _parse_sms_code(user_input.get(_CONF_SMS_CODE))
+        except (TypeError, ValueError) as exc:
+            return self.async_show_form(
+                step_id="reauth_sms_code",
+                data_schema=_reauth_sms_code_schema(),
+                errors={"base": _local_error(exc)},
+            )
+        entry = self._get_reauth_entry()
+        try:
+            current = AupuConfigEntryData.from_mapping(
+                entry.data, require_unexpired_token=False
+            )
+            api = AupuApiClient(
+                session=async_get_clientsession(self.hass),
+                signer=AppAuthorizationSigner(current.secrets),
+                credential=current.credential,
+                device=current.device,
+            )
+            login = await api.login_by_phone(self._reauth_phone, code)
+            candidate_data = {
+                **current.as_mapping(),
+                _CONF_TOKEN: _parse_token(login.token),
+                _CONF_USER_UUID: login.user_uuid,
+            }
+            if self._reauth_save_phone:
+                candidate_data[_CONF_PHONE] = self._reauth_phone
+            candidate = AupuConfigEntryData.from_mapping(candidate_data)
+        except (AupuError, TypeError, ValueError):
+            return self.async_show_form(
+                step_id="reauth_sms_code",
+                data_schema=_reauth_sms_code_schema(),
+                errors={"base": "cannot_connect"},
+            )
+        return self._async_finish_reauth(entry, candidate)
 
     async def async_step_reauth_manual_token(
         self, user_input: dict[str, Any] | None = None
@@ -276,12 +465,15 @@ class AupuConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors={"base": _local_error(exc)},
             )
 
+        return self._async_finish_reauth(entry, candidate)
+
+    def _async_finish_reauth(
+        self, entry: config_entries.ConfigEntry[Any], candidate: AupuConfigEntryData
+    ) -> config_entries.ConfigFlowResult:
+        """Finish either reauth method through HA's single atomic update path."""
         if entry.update_listeners:
             return self.async_update_and_abort(entry, data=candidate.as_mapping())
-        return self.async_update_reload_and_abort(
-            entry,
-            data=candidate.as_mapping(),
-        )
+        return self.async_update_reload_and_abort(entry, data=candidate.as_mapping())
 
     def _create_entry(
         self, candidate: AupuConfigEntryData

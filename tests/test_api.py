@@ -10,7 +10,11 @@ from typing import Any, Self, cast
 import aiohttp
 import pytest
 
-from custom_components.aupu_q360.api import AupuApiClient, build_light_control_body
+from custom_components.aupu_q360.api import (
+    AupuApiClient,
+    PhoneLoginResult,
+    build_light_control_body,
+)
 from custom_components.aupu_q360.auth import BearerCredential
 from custom_components.aupu_q360.errors import (
     AupuAuthError,
@@ -293,3 +297,75 @@ def test_error_messages_do_not_echo_untrusted_transport_details(
     del device, credential
     assert "private" not in str(AupuTemporaryError())
     assert "private" not in str(AupuProtocolError())
+
+
+def test_sms_request_and_phone_login_use_fresh_signatures_without_bearer(
+    device: DeviceConfig, credential: BearerCredential
+) -> None:
+    """Catch credential replay or a changed SMS endpoint/payload contract."""
+    session = _Session(
+        [
+            _Response(200, {"status": 0, "result": None, "timestamp": 10}),
+            _Response(
+                200,
+                {
+                    "status": 0,
+                    "result": {
+                        "token": "synthetic.new.token",
+                        "user": {"userUuid": "synthetic-user-uuid"},
+                    },
+                    "timestamp": 11,
+                },
+            ),
+        ]
+    )
+    signer = _Signer()
+    client = _client(session, signer, credential, device)
+
+    _run(client.request_sms_code(phone="13800000000"))
+    login = _run(client.login_by_phone(phone="13800000000", code="123456"))
+
+    assert login == PhoneLoginResult(
+        token="synthetic.new.token", user_uuid="synthetic-user-uuid"
+    )
+    assert signer.call_count == 2
+    assert session.calls[0]["method"] == "GET"
+    assert session.calls[0]["url"].endswith("/authserver/auth/user/terminal/smscode")
+    assert session.calls[0]["params"] == {
+        "areaCode": 86,
+        "appKey": "AP",
+        "phoneNum": "13800000000",
+        "type": "LOG",
+    }
+    assert session.calls[0]["headers"] == {"App-Authorization": "dynamic-1"}
+    assert session.calls[0]["json"] is None
+    assert session.calls[1]["method"] == "POST"
+    assert session.calls[1]["url"].endswith("/authserver/auth/user/terminal/loginByPhone")
+    assert session.calls[1]["json"] == {
+        "areaCode": 86,
+        "appKey": "AP",
+        "phone": "13800000000",
+        "randomCode": "123456",
+    }
+    assert session.calls[1]["headers"] == {"App-Authorization": "dynamic-2"}
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        None,
+        {},
+        {"token": "", "user": {"userUuid": "synthetic-user-uuid"}},
+        {"token": "synthetic.new.token", "user": {}},
+    ],
+)
+def test_phone_login_rejects_incomplete_response_without_echoing_it(
+    device: DeviceConfig, credential: BearerCredential, result: object
+) -> None:
+    """Catch malformed authentication results becoming entry-ready credentials."""
+    session = _Session([_Response(200, {"status": 0, "result": result, "timestamp": 10})])
+
+    with pytest.raises(AupuProtocolError) as raised:
+        _run(_client(session, _Signer(), credential, device).login_by_phone("13800000000", "123456"))
+
+    assert "synthetic.new.token" not in str(raised.value)

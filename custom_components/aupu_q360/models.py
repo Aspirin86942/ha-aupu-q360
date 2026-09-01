@@ -100,8 +100,6 @@ class AupuConfigEntryData:
         user_uuid = _optional_non_empty_string(value.get("user_uuid"), "User UUID")
         if use_wss and require_user_uuid and user_uuid is None:
             raise ValueError("User UUID is required when WSS is enabled")
-        if not use_wss:
-            user_uuid = None
 
         phone = _optional_non_empty_string(value.get("phone"), "Phone")
         return cls(

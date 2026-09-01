@@ -24,11 +24,13 @@ from custom_components.aupu_q360 import (
     async_setup_entry,
     async_unload_entry,
 )
+from custom_components.aupu_q360.api import PhoneLoginResult
 from custom_components.aupu_q360.config_flow import (
     AupuConfigFlow,
     AupuOptionsFlow,
 )
 from custom_components.aupu_q360.const import DOMAIN
+from custom_components.aupu_q360.errors import AupuProtocolError, AupuTemporaryError
 from custom_components.aupu_q360.models import ApiResponse, AupuRuntimeData
 from custom_components.aupu_q360.signer import AppAuthorizationSigner
 
@@ -698,7 +700,10 @@ def test_manual_reauth_accepts_only_a_new_valid_token_and_reloads_once(
     first = _run(flow.async_step_reauth())
 
     assert first["type"] is FlowResultType.FORM
-    assert first["step_id"] == "reauth_manual_token"
+    assert first["step_id"] == "reauth_method"
+    method = _run(flow.async_step_reauth_method({"method": "manual_token"}))
+    assert method["type"] is FlowResultType.FORM
+    assert method["step_id"] == "reauth_manual_token"
 
     invalid = _run(flow.async_step_reauth_manual_token({"token": expired}))
 
@@ -773,6 +778,196 @@ def test_loaded_manual_reauth_rejects_current_token_then_listener_reloads_once(
     assert entry.runtime_data is not None
     assert entry.runtime_data is not old_runtime
     assert entry.runtime_data.credential.authorization_header == f"Bearer {replacement}"
+
+
+def test_reauth_ignores_framework_entry_payload_and_enters_method_selection() -> None:
+    """Catch HA's initial entry.data payload being mistaken for manual token input."""
+    entry = FakeEntry(data=persisted_data(token=make_synthetic_jwt({"exp": 1})))
+    flow, hass = prepare_reauth_flow(entry)
+
+    result = _run(flow.async_step_reauth(dict(entry.data)))
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "reauth_method"
+    assert not result["errors"]
+    assert hass.config_entries.update_calls == 0
+
+
+def test_sms_reauth_sends_only_after_submit_and_persists_no_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch eager SMS sends or a successful code flow persisting the verification code."""
+    old_data = persisted_data(token=make_synthetic_jwt({"exp": 1}))
+    entry = FakeEntry(data=dict(old_data))
+    flow, hass = prepare_reauth_flow(entry)
+    calls: list[tuple[str, tuple[str, str] | str]] = []
+    replacement = valid_token()
+
+    class FakeApiClient:
+        def __init__(self, **kwargs: object) -> None:
+            del kwargs
+
+        async def request_sms_code(self, *, phone: str) -> None:
+            calls.append(("sms", phone))
+
+        async def login_by_phone(self, phone: str, code: str) -> PhoneLoginResult:
+            calls.append(("login", (phone, code)))
+            return PhoneLoginResult(token=replacement, user_uuid="synthetic-user-uuid")
+
+    monkeypatch.setattr("custom_components.aupu_q360.config_flow.AupuApiClient", FakeApiClient)
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.config_flow.async_get_clientsession", lambda _: object()
+    )
+    monkeypatch.setattr("custom_components.aupu_q360.async_get_clientsession", lambda _: object())
+
+    assert _run(flow.async_step_reauth())["step_id"] == "reauth_method"
+    assert _run(flow.async_step_reauth_method({"method": "sms"}))["step_id"] == "reauth_sms_send"
+    before_submit = _run(flow.async_step_reauth_sms_send())
+    assert before_submit["step_id"] == "reauth_sms_send"
+    assert calls == []
+
+    sent = _run(
+        flow.async_step_reauth_sms_send({"phone": "13800000000", "save_phone": False})
+    )
+    assert sent["step_id"] == "reauth_sms_code"
+    assert calls == [("sms", "13800000000")]
+
+    result = _run(flow.async_step_reauth_sms_code({"code": "123456"}))
+    _run(hass.config_entries.async_wait_for_update_listeners())
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reauth_successful"
+    assert entry.data["token"] == replacement
+    assert entry.data["user_uuid"] == "synthetic-user-uuid"
+    assert "phone" not in entry.data
+    assert "code" not in entry.data
+    assert "123456" not in entry.data.values()
+    assert calls == [("sms", "13800000000"), ("login", ("13800000000", "123456"))]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        AupuTemporaryError(),
+        AupuProtocolError(),
+        PhoneLoginResult(token="not-a-jwt", user_uuid="synthetic-user-uuid"),
+    ],
+)
+def test_sms_reauth_failures_keep_old_entry_data(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception | PhoneLoginResult
+) -> None:
+    """Catch failed SMS login updating token, UUID, phone, or runtime state."""
+    old_data = persisted_data(token=make_synthetic_jwt({"exp": 1}))
+    entry = FakeEntry(data=dict(old_data))
+    flow, hass = prepare_reauth_flow(entry)
+
+    class FakeApiClient:
+        def __init__(self, **kwargs: object) -> None:
+            del kwargs
+
+        async def request_sms_code(self, *, phone: str) -> None:
+            del phone
+
+        async def login_by_phone(self, phone: str, code: str) -> PhoneLoginResult:
+            del phone, code
+            if isinstance(failure, PhoneLoginResult):
+                return failure
+            raise failure
+
+    monkeypatch.setattr("custom_components.aupu_q360.config_flow.AupuApiClient", FakeApiClient)
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.config_flow.async_get_clientsession", lambda _: object()
+    )
+    _run(flow.async_step_reauth())
+    _run(flow.async_step_reauth_method({"method": "sms"}))
+    _run(flow.async_step_reauth_sms_send({"phone": "13800000000", "save_phone": True}))
+
+    result = _run(flow.async_step_reauth_sms_code({"code": "123456"}))
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "reauth_sms_code"
+    assert entry.data == old_data
+    assert hass.config_entries.update_calls == 0
+    assert hass.config_entries.reload_calls == 0
+
+
+def test_sms_reauth_rejects_repeat_send_within_sixty_seconds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch a resend path that can trigger another SMS before the local cooldown."""
+    entry = FakeEntry(data=persisted_data(token=make_synthetic_jwt({"exp": 1})))
+    flow, _ = prepare_reauth_flow(entry)
+    sent_phones: list[str] = []
+
+    class FakeApiClient:
+        def __init__(self, **kwargs: object) -> None:
+            del kwargs
+
+        async def request_sms_code(self, *, phone: str) -> None:
+            sent_phones.append(phone)
+
+    monotonic_values = iter((100.0, 130.0))
+    monkeypatch.setattr("custom_components.aupu_q360.config_flow.AupuApiClient", FakeApiClient)
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.config_flow.async_get_clientsession", lambda _: object()
+    )
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.config_flow.monotonic", lambda: next(monotonic_values)
+    )
+    _run(flow.async_step_reauth())
+    _run(flow.async_step_reauth_method({"method": "sms"}))
+
+    _run(flow.async_step_reauth_sms_send({"phone": "13800000000", "save_phone": False}))
+    repeated = _run(
+        flow.async_step_reauth_sms_send({"phone": "13800000000", "save_phone": False})
+    )
+
+    assert repeated["type"] is FlowResultType.FORM
+    assert repeated["errors"] == {"base": "sms_rate_limited"}
+    assert sent_phones == ["13800000000"]
+
+
+def test_sms_reauth_expires_code_locally_without_attempting_login(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch an expired local SMS code reaching the phone-login endpoint."""
+    old_data = persisted_data(token=make_synthetic_jwt({"exp": 1}))
+    entry = FakeEntry(data=dict(old_data))
+    flow, hass = prepare_reauth_flow(entry)
+    login_calls = 0
+
+    class FakeApiClient:
+        def __init__(self, **kwargs: object) -> None:
+            del kwargs
+
+        async def request_sms_code(self, *, phone: str) -> None:
+            del phone
+
+        async def login_by_phone(self, phone: str, code: str) -> PhoneLoginResult:
+            nonlocal login_calls
+            del phone, code
+            login_calls += 1
+            raise AssertionError("expired code must not reach login")
+
+    monotonic_values = iter((100.0, 401.0))
+    monkeypatch.setattr("custom_components.aupu_q360.config_flow.AupuApiClient", FakeApiClient)
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.config_flow.async_get_clientsession", lambda _: object()
+    )
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.config_flow.monotonic", lambda: next(monotonic_values)
+    )
+    _run(flow.async_step_reauth())
+    _run(flow.async_step_reauth_method({"method": "sms"}))
+    _run(flow.async_step_reauth_sms_send({"phone": "13800000000", "save_phone": False}))
+
+    expired = _run(flow.async_step_reauth_sms_code({"code": "123456"}))
+
+    assert expired["type"] is FlowResultType.FORM
+    assert expired["errors"] == {"base": "sms_code_expired"}
+    assert entry.data == old_data
+    assert hass.config_entries.update_calls == 0
+    assert login_calls == 0
 
 
 def test_failed_expired_setup_options_recovery_reloads_and_clears_repairs_once(

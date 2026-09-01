@@ -22,6 +22,28 @@
         "data": {
           "token": "New Bearer JWT"
         }
+      },
+      "reauth_method": {
+        "title": "Reauthenticate AUPU",
+        "description": "Choose a recovery method. Your current token is never displayed.",
+        "data": {
+          "method": "Recovery method"
+        }
+      },
+      "reauth_sms_send": {
+        "title": "Send verification code",
+        "description": "Submitting sends one SMS verification code. The number is only saved when selected.",
+        "data": {
+          "phone": "Phone number",
+          "save_phone": "Save phone number locally"
+        }
+      },
+      "reauth_sms_code": {
+        "title": "Enter verification code",
+        "description": "Enter the six-digit SMS verification code. It expires locally after five minutes.",
+        "data": {
+          "code": "SMS verification code"
+        }
       }
     },
     "error": {
@@ -29,7 +51,12 @@
       "invalid_token": "The token is invalid.",
       "expired_token": "The token has expired.",
       "invalid_device": "The device identifier or tag is invalid.",
-      "cannot_connect": "The read-only connection check failed. No configuration was saved."
+      "cannot_connect": "The connection or authentication request failed. No configuration was saved.",
+      "invalid_phone": "The phone number is invalid.",
+      "invalid_sms_code": "Enter exactly six digits.",
+      "cannot_send_sms": "The verification code could not be sent. No configuration was saved.",
+      "sms_rate_limited": "A verification code was sent recently. Please wait before sending another.",
+      "sms_code_expired": "The verification code has expired. Request a new code."
     },
     "abort": {
       "already_configured": "This device is already configured.",
