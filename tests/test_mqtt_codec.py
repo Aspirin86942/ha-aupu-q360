@@ -51,6 +51,18 @@ def test_publish_encoder_rejects_invalid_topic_names(topic: str) -> None:
         encode_publish(topic, b"")
 
 
+@pytest.mark.parametrize("topic", [b"synthetic-private-topic", 42])
+def test_publish_encoder_rejects_non_string_topic_with_fixed_protocol_error(
+    topic: object,
+) -> None:
+    """Catch Topic Name type validation leaking bytes or integer implementation errors."""
+    with pytest.raises(AupuProtocolError) as raised:
+        encode_publish(topic, b"")
+
+    assert str(raised.value) == "Service response is invalid"
+    assert repr(topic) not in str(raised.value)
+
+
 @pytest.mark.parametrize(
     "packet",
     [

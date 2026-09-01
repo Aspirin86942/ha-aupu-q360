@@ -276,7 +276,13 @@ def _decode_packet_identifier(body: bytes) -> int:
 
 def _validate_publish_topic_name(value: str) -> None:
     """Require a non-empty, non-wildcard MQTT PUBLISH Topic Name."""
-    if not _is_valid_mqtt_utf8(value) or not value or "+" in value or "#" in value:
+    if (
+        not isinstance(value, str)
+        or not _is_valid_mqtt_utf8(value)
+        or not value
+        or "+" in value
+        or "#" in value
+    ):
         raise AupuProtocolError
 
 
