@@ -27,6 +27,8 @@ from custom_components.aupu_q360.errors import AupuAuthError, AupuTemporaryError
 from custom_components.aupu_q360.light import AupuLight
 from custom_components.aupu_q360.light import async_setup_entry as async_setup_light
 from custom_components.aupu_q360.models import ApiResponse, AupuRuntimeData
+from custom_components.aupu_q360.shadow import LightShadowUpdate
+from custom_components.aupu_q360.wss import AupuShadowWebSocket
 
 _TEST_LOOP = asyncio.new_event_loop()
 
@@ -270,6 +272,61 @@ def test_confirmed_state_notifies_entity_and_removal_unsubscribes(
     assert entity.writes == 2
 
 
+def test_shadow_source_and_disconnect_preserve_confirmed_state(
+    issues: IssueRecorder,
+) -> None:
+    """Catch desired/disconnect updates masquerading as physical confirmation."""
+    del issues
+    coordinator = _coordinator(FakeApi())
+    entity = AupuLight(
+        coordinator=coordinator,
+        entry_id="synthetic-entry",
+        unique_id="synthetic-light",
+    )
+
+    coordinator.async_apply_shadow_update(
+        LightShadowUpdate(is_on=True, confirmed=False, source="desired")
+    )
+    assert coordinator.is_on is True
+    assert coordinator.assumed_state is True
+
+    coordinator.async_apply_wss_connection(connected=True, healthy=True)
+    assert coordinator.wss_connected is True
+    assert coordinator.wss_healthy is True
+    assert entity.extra_state_attributes == {
+        "wss_connected": True,
+        "wss_healthy": True,
+    }
+
+    coordinator.async_apply_shadow_update(
+        LightShadowUpdate(is_on=False, confirmed=True, source="reported")
+    )
+    coordinator.async_apply_wss_connection(connected=False, healthy=False)
+
+    assert coordinator.is_on is False
+    assert coordinator.assumed_state is False
+    assert coordinator.wss_connected is False
+    assert coordinator.wss_healthy is False
+    assert entity.extra_state_attributes == {
+        "wss_connected": False,
+        "wss_healthy": False,
+    }
+
+
+def test_wss_auth_failure_reuses_deduplicated_reauth_entry(
+    issues: IssueRecorder,
+) -> None:
+    """Catch repeated WSS authentication callbacks creating duplicate Reauth flows."""
+    del issues
+    requests: list[None] = []
+    coordinator = _coordinator(FakeApi(), reauth_requests=requests)
+
+    coordinator.async_handle_wss_auth_failure()
+    coordinator.async_handle_wss_auth_failure()
+
+    assert requests == [None]
+
+
 @pytest.mark.parametrize(
     ("offset", "created_id", "severity", "persistent", "raises_auth"),
     [
@@ -403,8 +460,13 @@ class FakeHass:
         self.config_entries.hass = self
 
 
-def _persisted_data(*, token: str | None = None) -> dict[str, object]:
-    return {
+def _persisted_data(
+    *,
+    token: str | None = None,
+    use_wss: bool = False,
+    user_uuid: str | None = None,
+) -> dict[str, object]:
+    result: dict[str, object] = {
         "signer": {
             "app_key": "synthetic-app-key",
             "key_prefix": "synthetic-prefix",
@@ -422,8 +484,11 @@ def _persisted_data(*, token: str | None = None) -> dict[str, object]:
         "token": token or _token(datetime.now(UTC) + timedelta(days=2)),
         "did": "123456789",
         "tag": "synthetic-tag",
-        "use_wss": False,
+        "use_wss": use_wss,
     }
+    if user_uuid is not None:
+        result["user_uuid"] = user_uuid
+    return result
 
 
 def test_setup_starts_one_coordinator_stopper_and_adds_only_one_light(
@@ -529,3 +594,96 @@ def test_expired_setup_reconciles_repair_then_fails_auth_without_forwarding(
             "translation_key": "jwt_expired",
         },
     )
+
+
+def test_setup_and_unload_own_one_enabled_wss_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+    issues: IssueRecorder,
+) -> None:
+    """Catch WSS starting twice, becoming a duplicate stopper, or surviving unload."""
+    del issues
+    entry = FakeEntry(
+        data=_persisted_data(
+            use_wss=True,
+            user_uuid="synthetic-user-uuid",
+        )
+    )
+    config_entries = FakeConfigEntries()
+    hass = FakeHass(config_entries)
+    starts: list[AupuShadowWebSocket] = []
+    stops: list[AupuShadowWebSocket] = []
+
+    async def record_start(client: AupuShadowWebSocket) -> None:
+        starts.append(client)
+
+    async def record_stop(client: AupuShadowWebSocket) -> None:
+        stops.append(client)
+
+    monkeypatch.setattr(AupuShadowWebSocket, "async_start", record_start)
+    monkeypatch.setattr(AupuShadowWebSocket, "async_stop", record_stop)
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.async_get_clientsession",
+        lambda _: object(),
+    )
+
+    assert _run(
+        async_setup_entry(
+            cast(HomeAssistant, hass),
+            cast(ConfigEntry[AupuRuntimeData], entry),
+        )
+    ) is True
+    assert entry.runtime_data is not None
+    assert len(starts) == 1
+    assert entry.runtime_data.stoppers == [entry.runtime_data.coordinator]
+
+    assert _run(
+        async_unload_entry(
+            cast(HomeAssistant, hass),
+            cast(ConfigEntry[AupuRuntimeData], entry),
+        )
+    ) is True
+    assert stops == starts
+    assert "runtime_data" not in entry.__dict__
+
+
+def test_missing_wss_user_uuid_requests_reauth_without_failing_setup(
+    monkeypatch: pytest.MonkeyPatch,
+    issues: IssueRecorder,
+) -> None:
+    """Catch incomplete historical WSS data crashing load or touching the network."""
+    del issues
+    entry = FakeEntry(data=_persisted_data(use_wss=True))
+    config_entries = FakeConfigEntries()
+    hass = FakeHass(config_entries)
+    starts: list[AupuShadowWebSocket] = []
+    original_start = AupuShadowWebSocket.async_start
+
+    async def record_start(client: AupuShadowWebSocket) -> None:
+        starts.append(client)
+        await original_start(client)
+
+    monkeypatch.setattr(AupuShadowWebSocket, "async_start", record_start)
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.async_get_clientsession",
+        lambda _: object(),
+    )
+
+    assert _run(
+        async_setup_entry(
+            cast(HomeAssistant, hass),
+            cast(ConfigEntry[AupuRuntimeData], entry),
+        )
+    ) is True
+    assert len(starts) == 1
+    assert starts[0].is_running is False
+    assert entry.reauth_calls == 1
+    assert len(config_entries.entities) == 1
+    assert config_entries.entities[0].is_on is None
+    assert config_entries.entities[0].assumed_state is True
+
+    assert _run(
+        async_unload_entry(
+            cast(HomeAssistant, hass),
+            cast(ConfigEntry[AupuRuntimeData], entry),
+        )
+    ) is True

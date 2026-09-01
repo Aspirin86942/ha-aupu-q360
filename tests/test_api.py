@@ -13,6 +13,7 @@ import pytest
 from custom_components.aupu_q360.api import (
     AupuApiClient,
     PhoneLoginResult,
+    WssCredentials,
     build_light_control_body,
 )
 from custom_components.aupu_q360.auth import BearerCredential
@@ -133,6 +134,84 @@ def test_light_bodies_only_differ_at_confirmed_boolean(device: DeviceConfig) -> 
     assert _json_diff(on_body, off_body) == {
         f"sendBody.state.desired.{device.did}.2.properties.1"
     }
+
+
+def test_wss_credentials_use_one_fresh_signed_bearer_post(
+    device: DeviceConfig, credential: BearerCredential
+) -> None:
+    """Catch wrong WSS endpoint/body/auth or accepting an incomplete credential set."""
+    signer = _Signer()
+    session = _Session(
+        [
+            _Response(
+                200,
+                {
+                    "status": 0,
+                    "result": {
+                        "x-amz-customauthorizer-name": "synthetic-authorizer",
+                        "x-amz-customauthorizer-signature": "synthetic-signature",
+                        "tokenKeyName": "synthetic-token-key",
+                    },
+                    "timestamp": 1,
+                },
+            )
+        ]
+    )
+    client = _client(session, signer, credential, device)
+
+    credentials = _run(client.get_wss_credentials())
+
+    assert credentials == WssCredentials(
+        authorizer_name="synthetic-authorizer",
+        signature="synthetic-signature",
+        token_key_name="synthetic-token-key",
+    )
+    assert session.calls == [
+        {
+            "method": "POST",
+            "url": "https://cn-north-1-prod.aupu.net/iotservice/api/iot/wss/getWssToken",
+            "headers": {
+                "App-Authorization": "dynamic-1",
+                "Authorization": credential.authorization_header,
+            },
+            "json": {},
+            "params": None,
+            "allow_redirects": False,
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        None,
+        {},
+        {
+            "x-amz-customauthorizer-name": "",
+            "x-amz-customauthorizer-signature": "synthetic-signature",
+            "tokenKeyName": "synthetic-token-key",
+        },
+        {
+            "x-amz-customauthorizer-name": "synthetic-authorizer",
+            "x-amz-customauthorizer-signature": 7,
+            "tokenKeyName": "synthetic-token-key",
+        },
+    ],
+)
+def test_wss_credentials_reject_malformed_result_without_echoing_it(
+    result: object, device: DeviceConfig, credential: BearerCredential
+) -> None:
+    """Catch damaged or attacker-controlled credential payloads escaping validation."""
+    session = _Session(
+        [_Response(200, {"status": 0, "result": result, "timestamp": 1})]
+    )
+    client = _client(session, _Signer(), credential, device)
+
+    with pytest.raises(AupuProtocolError) as raised:
+        _run(client.get_wss_credentials())
+
+    assert str(raised.value) == "Service response is invalid"
+    assert repr(result) not in str(raised.value)
 
 
 @pytest.mark.parametrize("did", ["", " ", "12a", "-1", "1.0"])

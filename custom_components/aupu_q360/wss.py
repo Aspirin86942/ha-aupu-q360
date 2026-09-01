@@ -1,0 +1,262 @@
+"""Ephemeral AWS IoT MQTT-over-WebSocket lifecycle for one Q360 Shadow."""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from collections import deque
+from collections.abc import Awaitable, Callable
+
+import aiohttp
+
+from .api import AupuApiClient
+from .auth import BearerCredential
+from .errors import AupuAuthError, AupuError, AupuProtocolError
+from .models import DeviceConfig
+from .mqtt_codec import (
+    MqttPacket,
+    MqttPacketDecoder,
+    PacketType,
+    encode_connect,
+    encode_disconnect,
+    encode_pingreq,
+    encode_publish,
+    encode_subscribe,
+)
+from .shadow import LightShadowUpdate
+
+_WSS_ENDPOINT = "wss://aii5h05kuofsj.ats.iot.cn-north-1.amazonaws.com.cn/mqtt"
+_RETRY_DELAYS = (2.0, 4.0, 8.0, 16.0, 30.0)
+_KEEP_ALIVE_SECONDS = 30
+
+ConnectionCallback = Callable[[bool, bool], None]
+ShadowParser = Callable[[str, bytes], LightShadowUpdate | None]
+
+
+class AupuShadowWebSocket:
+    """Own one cancellable WSS runner without retaining per-connection secrets."""
+
+    def __init__(
+        self,
+        *,
+        session: aiohttp.ClientSession,
+        api: AupuApiClient,
+        credential: BearerCredential,
+        device: DeviceConfig,
+        user_uuid: str | None,
+        async_connection_changed: ConnectionCallback,
+        async_auth_failed: Callable[[], None],
+        parse_shadow: ShadowParser,
+        async_shadow_update: Callable[[LightShadowUpdate], None],
+        clock_ms: Callable[[], int] | None = None,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
+        self._session = session
+        self._api = api
+        self._credential = credential
+        self._device = device
+        self._user_uuid = user_uuid
+        self._async_connection_changed = async_connection_changed
+        self._async_auth_failed = async_auth_failed
+        self._parse_shadow = parse_shadow
+        self._async_shadow_update = async_shadow_update
+        self._clock_ms = clock_ms or _unix_milliseconds
+        self._sleep = sleep
+        self._runner_task: asyncio.Task[None] | None = None
+        self._ready_in_attempt = False
+
+    @property
+    def is_running(self) -> bool:
+        """Return whether the sole background runner is still active."""
+        return self._runner_task is not None and not self._runner_task.done()
+
+    async def async_start(self) -> None:
+        """Start at most one runner; incomplete WSS opt-in performs no network work."""
+        if self._user_uuid is None or self.is_running:
+            return
+        task = asyncio.create_task(self._run(), name="aupu_q360_wss")
+        self._runner_task = task
+        task.add_done_callback(self._runner_done)
+
+    async def async_stop(self) -> None:
+        """Cancel and await all WSS-owned work while preserving caller cancellation."""
+        task = self._runner_task
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling() > 0:
+                raise
+        finally:
+            if self._runner_task is task:
+                self._runner_task = None
+
+    def _runner_done(self, task: asyncio.Task[None]) -> None:
+        """Release the completed task reference and consume unexpected task errors."""
+        if not task.cancelled():
+            task.exception()
+        if self._runner_task is task:
+            self._runner_task = None
+
+    async def _run(self) -> None:
+        retry_index = 0
+        while True:
+            self._ready_in_attempt = False
+            try:
+                await self._connect_once()
+            except asyncio.CancelledError:
+                raise
+            except AupuAuthError:
+                self._async_auth_failed()
+                return
+            except aiohttp.WSServerHandshakeError as exc:
+                if exc.status in (401, 403):
+                    self._async_auth_failed()
+                    return
+            except (AupuError, aiohttp.ClientError, TimeoutError):
+                pass
+
+            if self._ready_in_attempt:
+                retry_index = 0
+            delay = _RETRY_DELAYS[min(retry_index, len(_RETRY_DELAYS) - 1)]
+            retry_index += 1
+            await self._sleep(delay)
+
+    async def _connect_once(self) -> None:
+        credentials = await self._api.get_wss_credentials()
+        raw_token = self._credential.authorization_header.removeprefix("Bearer ")
+        client_id = f"{self._user_uuid}-{raw_token[-8:]}-{self._clock_ms()}"
+        connect_packet = encode_connect(client_id, keep_alive=_KEEP_ALIVE_SECONDS)
+        params = {
+            "x-amz-customauthorizer-name": credentials.authorizer_name,
+            "x-amz-customauthorizer-signature": credentials.signature,
+            "tokenKeyName": credentials.token_key_name,
+        }
+        try:
+            websocket = await self._session.ws_connect(
+                _WSS_ENDPOINT,
+                params=params,
+                protocols=("mqtt",),
+            )
+        finally:
+            del params, credentials, raw_token, client_id
+
+        decoder = MqttPacketDecoder()
+        pending: deque[MqttPacket] = deque()
+        mqtt_connected = False
+        ping_task: asyncio.Task[None] | None = None
+        receive_task: asyncio.Task[None] | None = None
+        try:
+            await websocket.send_bytes(connect_packet)
+            connack = await _receive_packet(websocket, decoder, pending)
+            if connack.packet_type is not PacketType.CONNACK or connack.return_code != 0:
+                raise AupuProtocolError
+            mqtt_connected = True
+
+            topics = (
+                f"$aws/things/{self._device.did}/shadow/update/accepted",
+                f"$aws/things/{self._device.did}/shadow/get/accepted",
+            )
+            for packet_identifier, topic in enumerate(topics, start=1):
+                await websocket.send_bytes(encode_subscribe(packet_identifier, topic))
+
+            expected_subacks = {1, 2}
+            while expected_subacks:
+                suback = await _receive_packet(websocket, decoder, pending)
+                if (
+                    suback.packet_type is not PacketType.SUBACK
+                    or suback.packet_identifier not in expected_subacks
+                    or suback.granted_qos != 0
+                ):
+                    raise AupuProtocolError
+                expected_subacks.remove(suback.packet_identifier)
+
+            await websocket.send_bytes(
+                encode_publish(
+                    f"$aws/things/{self._device.did}/shadow/get",
+                    b"{}",
+                )
+            )
+            self._ready_in_attempt = True
+            self._async_connection_changed(True, False)
+            ping_task = asyncio.create_task(
+                self._ping_loop(websocket), name="aupu_q360_wss_ping"
+            )
+            receive_task = asyncio.create_task(
+                self._receive_loop(websocket, decoder, pending),
+                name="aupu_q360_wss_receive",
+            )
+            session_tasks = {ping_task, receive_task}
+            done, unfinished = await asyncio.wait(
+                session_tasks, return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in unfinished:
+                task.cancel()
+            await asyncio.gather(*unfinished, return_exceptions=True)
+            for task in done:
+                await task
+        finally:
+            background = tuple(
+                task for task in (ping_task, receive_task) if task is not None
+            )
+            for task in background:
+                task.cancel()
+            if background:
+                await asyncio.gather(*background, return_exceptions=True)
+            if mqtt_connected:
+                try:
+                    await websocket.send_bytes(encode_disconnect())
+                except (aiohttp.ClientError, RuntimeError):
+                    pass
+            try:
+                await websocket.close()
+            except (aiohttp.ClientError, RuntimeError):
+                pass
+            self._async_connection_changed(False, False)
+
+    async def _ping_loop(self, websocket: aiohttp.ClientWebSocketResponse) -> None:
+        while True:
+            await self._sleep(_KEEP_ALIVE_SECONDS)
+            self._async_connection_changed(True, False)
+            await websocket.send_bytes(encode_pingreq())
+
+    async def _receive_loop(
+        self,
+        websocket: aiohttp.ClientWebSocketResponse,
+        decoder: MqttPacketDecoder,
+        pending: deque[MqttPacket],
+    ) -> None:
+        while True:
+            packet = await _receive_packet(websocket, decoder, pending)
+            if packet.packet_type is PacketType.PINGRESP:
+                self._async_connection_changed(True, True)
+                continue
+            if packet.packet_type is not PacketType.PUBLISH or packet.topic is None:
+                raise AupuProtocolError
+            update = self._parse_shadow(packet.topic, packet.payload)
+            if update is not None:
+                self._async_shadow_update(update)
+
+
+async def _receive_packet(
+    websocket: aiohttp.ClientWebSocketResponse,
+    decoder: MqttPacketDecoder,
+    pending: deque[MqttPacket],
+) -> MqttPacket:
+    """Read binary frames until one complete MQTT packet is available."""
+    while not pending:
+        message = await websocket.receive()
+        if message.type is not aiohttp.WSMsgType.BINARY or not isinstance(
+            message.data, bytes
+        ):
+            raise AupuProtocolError
+        pending.extend(decoder.feed(message.data))
+    return pending.popleft()
+
+
+def _unix_milliseconds() -> int:
+    """Return current Unix milliseconds for the per-connection client identifier."""
+    return int(time.time() * 1000)

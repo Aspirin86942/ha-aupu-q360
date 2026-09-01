@@ -70,6 +70,14 @@ class AupuLight(LightEntity):
         """Return whether the current state is only a desired state."""
         return self._coordinator.assumed_state
 
+    @property
+    def extra_state_attributes(self) -> dict[str, bool]:
+        """Expose non-secret WSS connection health without affecting HTTPS control."""
+        return {
+            "wss_connected": self._coordinator.wss_connected,
+            "wss_healthy": self._coordinator.wss_healthy,
+        }
+
     async def async_added_to_hass(self) -> None:
         """Listen for coordinator state changes while the entity is loaded."""
         self._remove_listener = self._coordinator.async_add_listener(

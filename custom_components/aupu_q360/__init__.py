@@ -67,17 +67,21 @@ async def async_setup_entry(
     """Build non-serializable runtime objects and forward the light platform."""
     config = AupuConfigEntryData.from_mapping(
         entry.data,
+        require_user_uuid=False,
         require_unexpired_token=False,
     )
     signer = AppAuthorizationSigner(config.secrets)
     credential = config.credential
     device = config.device
+    session = async_get_clientsession(hass)
     entry.runtime_data = AupuRuntimeData(
         signer=signer,
         credential=credential,
         device=device,
+        use_wss=config.use_wss,
+        user_uuid=config.user_uuid,
         api=AupuApiClient(
-            session=async_get_clientsession(hass),
+            session=session,
             signer=signer,
             credential=credential,
             device=device,
@@ -89,6 +93,10 @@ async def async_setup_entry(
         credential=credential,
         api=entry.runtime_data.api,
         async_request_reauth=lambda: entry.async_start_reauth(hass),
+        session=session,
+        device=device,
+        use_wss=config.use_wss,
+        user_uuid=config.user_uuid,
     )
     entry.runtime_data.coordinator = coordinator
     entry.runtime_data.stoppers.append(coordinator)

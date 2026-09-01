@@ -4,12 +4,19 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from dataclasses import field as dataclass_field
+from typing import Any, cast
 
 import aiohttp
 
 from .auth import BearerCredential
-from .const import AUPU_BASE_URL, CONTROL_PATH, PHONE_LOGIN_PATH, SMS_CODE_PATH
+from .const import (
+    AUPU_BASE_URL,
+    CONTROL_PATH,
+    PHONE_LOGIN_PATH,
+    SMS_CODE_PATH,
+    WSS_CREDENTIAL_PATH,
+)
 from .errors import (
     AupuAuthError,
     AupuProtocolError,
@@ -28,6 +35,15 @@ class PhoneLoginResult:
 
     token: str
     user_uuid: str
+
+
+@dataclass(frozen=True, slots=True)
+class WssCredentials:
+    """Validated, ephemeral AWS IoT custom-authorizer query values."""
+
+    authorizer_name: str = dataclass_field(repr=False)
+    signature: str = dataclass_field(repr=False)
+    token_key_name: str = dataclass_field(repr=False)
 
 
 def build_light_control_body(device: DeviceConfig, *, is_on: bool) -> dict[str, Any]:
@@ -145,6 +161,16 @@ class AupuApiClient:
             json=build_light_control_body(self._device, is_on=is_on),
         )
 
+    async def get_wss_credentials(self) -> WssCredentials:
+        """Fetch one fresh, validated set of ephemeral WSS query credentials."""
+        response = await self._request(
+            "POST",
+            WSS_CREDENTIAL_PATH,
+            json={},
+            include_bearer=True,
+        )
+        return _parse_wss_credentials(response.result)
+
 
 def _raise_for_http_status(status: int) -> None:
     """Classify HTTP status without incorporating remote response details."""
@@ -190,3 +216,22 @@ def _parse_phone_login(result: object) -> PhoneLoginResult:
     if not isinstance(user_uuid, str) or not user_uuid.strip():
         raise AupuProtocolError()
     return PhoneLoginResult(token=token.strip(), user_uuid=user_uuid.strip())
+
+
+def _parse_wss_credentials(result: object) -> WssCredentials:
+    """Accept only the complete three-value WSS custom-authorizer contract."""
+    if not isinstance(result, Mapping):
+        raise AupuProtocolError
+    values = (
+        result.get("x-amz-customauthorizer-name"),
+        result.get("x-amz-customauthorizer-signature"),
+        result.get("tokenKeyName"),
+    )
+    if any(not isinstance(value, str) or not value.strip() for value in values):
+        raise AupuProtocolError
+    authorizer_name, signature, token_key_name = cast(tuple[str, str, str], values)
+    return WssCredentials(
+        authorizer_name=authorizer_name.strip(),
+        signature=signature.strip(),
+        token_key_name=token_key_name.strip(),
+    )

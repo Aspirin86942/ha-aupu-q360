@@ -151,6 +151,8 @@ class AupuRuntimeData:
     credential: BearerCredential
     device: DeviceConfig
     api: AupuApiClient
+    use_wss: bool = False
+    user_uuid: str | None = field(default=None, repr=False)
     coordinator: AupuCoordinator = field(init=False)
     stoppers: list[AsyncStopper] = field(default_factory=list)
 
