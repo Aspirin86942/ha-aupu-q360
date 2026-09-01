@@ -1,1 +1,59 @@
-{}
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "配置奥普 Q360",
+        "description": "所有值仅在本地校验。WSS 默认关闭，本步骤不会连接奥普服务。",
+        "data": {
+          "signer_json": "私有签名参数 JSON",
+          "token": "Bearer JWT",
+          "did": "设备标识",
+          "tag": "设备标签",
+          "use_wss": "启用 WSS 确认状态"
+        }
+      },
+      "confirm_wss": {
+        "title": "确认只读连接检查",
+        "description": "提交本页将授权一次只读的终端信息请求，不会发送设备控制命令。"
+      }
+    },
+    "error": {
+      "invalid_signer": "签名参数 JSON 不完整或无效。",
+      "invalid_token": "Token 无效。",
+      "expired_token": "Token 已过期。",
+      "invalid_device": "设备标识或标签无效。",
+      "cannot_connect": "只读连接检查失败，未保存任何配置。"
+    },
+    "abort": {
+      "already_configured": "该设备已配置。",
+      "invalid_state": "待确认的配置已不存在。",
+      "invalid_entry": "已保存的配置无效。"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "更新本地凭据",
+        "description": "Token 留空表示保留原值。只有完整候选配置校验通过后才会保存。",
+        "data": {
+          "token": "新的 Bearer JWT",
+          "phone": "本地手机号（可选）",
+          "use_wss": "启用 WSS 确认状态"
+        }
+      },
+      "confirm_wss": {
+        "title": "确认只读连接检查",
+        "description": "提交本页将授权一次只读的终端信息请求；失败时原有设置保持不变。"
+      }
+    },
+    "error": {
+      "invalid_token": "Token 无效。",
+      "expired_token": "Token 已过期。",
+      "cannot_connect": "只读连接检查失败，原有设置未改变。"
+    },
+    "abort": {
+      "invalid_state": "待确认的更新已不存在。",
+      "invalid_entry": "已保存的配置无效。"
+    }
+  }
+}

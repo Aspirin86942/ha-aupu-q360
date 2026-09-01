@@ -1,1 +1,59 @@
-{}
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Configure AUPU Q360",
+        "description": "All values are validated locally. WSS is disabled by default and this step does not contact AUPU.",
+        "data": {
+          "signer_json": "Private signer JSON",
+          "token": "Bearer JWT",
+          "did": "Device identifier",
+          "tag": "Device tag",
+          "use_wss": "Enable WSS verified state"
+        }
+      },
+      "confirm_wss": {
+        "title": "Confirm read-only connection check",
+        "description": "Submitting this page authorizes exactly one read-only terminal-info request. It does not send a device control command."
+      }
+    },
+    "error": {
+      "invalid_signer": "The signer JSON is incomplete or invalid.",
+      "invalid_token": "The token is invalid.",
+      "expired_token": "The token has expired.",
+      "invalid_device": "The device identifier or tag is invalid.",
+      "cannot_connect": "The read-only connection check failed. No configuration was saved."
+    },
+    "abort": {
+      "already_configured": "This device is already configured.",
+      "invalid_state": "The pending configuration is no longer available.",
+      "invalid_entry": "The stored configuration is invalid."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Update local credentials",
+        "description": "Leave the token blank to keep the existing token. Changes are saved only after the complete candidate is valid.",
+        "data": {
+          "token": "New Bearer JWT",
+          "phone": "Local phone number (optional)",
+          "use_wss": "Enable WSS verified state"
+        }
+      },
+      "confirm_wss": {
+        "title": "Confirm read-only connection check",
+        "description": "Submitting this page authorizes exactly one read-only terminal-info request. Existing settings remain unchanged if it fails."
+      }
+    },
+    "error": {
+      "invalid_token": "The token is invalid.",
+      "expired_token": "The token has expired.",
+      "cannot_connect": "The read-only connection check failed. Existing settings were not changed."
+    },
+    "abort": {
+      "invalid_state": "The pending update is no longer available.",
+      "invalid_entry": "The stored configuration is invalid."
+    }
+  }
+}
