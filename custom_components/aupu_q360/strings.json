@@ -55,5 +55,15 @@
       "invalid_state": "The pending update is no longer available.",
       "invalid_entry": "The stored configuration is invalid."
     }
+  },
+  "issues": {
+    "jwt_expiring": {
+      "title": "AUPU token expires soon",
+      "description": "The local AUPU token expires within 24 hours. Update it in the integration options to keep control available."
+    },
+    "jwt_expired": {
+      "title": "AUPU token expired",
+      "description": "The local AUPU token has expired. Reauthenticate or update it in the integration options before controlling the light."
+    }
   }
 }

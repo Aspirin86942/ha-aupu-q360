@@ -11,6 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import AupuApiClient
+from .coordinator import AupuCoordinator
 from .models import AupuConfigEntryData, AupuRuntimeData
 from .signer import AppAuthorizationSigner
 
@@ -64,7 +65,10 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry[AupuRuntimeData]
 ) -> bool:
     """Build non-serializable runtime objects and forward the light platform."""
-    config = AupuConfigEntryData.from_mapping(entry.data)
+    config = AupuConfigEntryData.from_mapping(
+        entry.data,
+        require_unexpired_token=False,
+    )
     signer = AppAuthorizationSigner(config.secrets)
     credential = config.credential
     device = config.device
@@ -79,7 +83,16 @@ async def async_setup_entry(
             device=device,
         ),
     )
+    coordinator = AupuCoordinator(
+        hass=hass,
+        entry_id=entry.entry_id,
+        credential=credential,
+        api=entry.runtime_data.api,
+    )
+    entry.runtime_data.coordinator = coordinator
+    entry.runtime_data.stoppers.append(coordinator)
     try:
+        await coordinator.async_start()
         await hass.config_entries.async_forward_entry_setups(entry, _PLATFORMS)
     except BaseException:
         await _async_teardown_runtime(entry)

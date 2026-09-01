@@ -11,6 +11,7 @@ from .signer import AppAuthorizationSigner, SignerSecrets
 
 if TYPE_CHECKING:
     from .api import AupuApiClient
+    from .coordinator import AupuCoordinator
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +153,7 @@ class AupuRuntimeData:
     credential: BearerCredential
     device: DeviceConfig
     api: AupuApiClient
+    coordinator: AupuCoordinator = field(init=False)
     stoppers: list[AsyncStopper] = field(default_factory=list)
 
 

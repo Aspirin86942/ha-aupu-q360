@@ -55,5 +55,15 @@
       "invalid_state": "待确认的更新已不存在。",
       "invalid_entry": "已保存的配置无效。"
     }
+  },
+  "issues": {
+    "jwt_expiring": {
+      "title": "奥普 Token 即将过期",
+      "description": "本地保存的奥普 Token 将在 24 小时内过期。请在集成选项中更新，以保持照明控制可用。"
+    },
+    "jwt_expired": {
+      "title": "奥普 Token 已过期",
+      "description": "本地保存的奥普 Token 已过期。重新认证或在集成选项中更新后才能控制照明。"
+    }
   }
 }
