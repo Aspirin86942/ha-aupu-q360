@@ -38,35 +38,43 @@ async def async_get_config_entry_diagnostics(
 ) -> dict[str, str | bool]:
     """Return only non-secret scalar health signals from a loaded entry."""
     del hass
-    runtime = getattr(entry, "runtime_data", None)
-    credential = getattr(runtime, "credential", None)
-    coordinator = getattr(runtime, "coordinator", None)
+    runtime = _safe_getattr(entry, "runtime_data", None)
+    credential = _safe_getattr(runtime, "credential", None)
+    coordinator = _safe_getattr(runtime, "coordinator", None)
     runtime_complete = isinstance(credential, BearerCredential) and coordinator is not None
 
     result: dict[str, str | bool] = {}
     result["integration_version"] = _INTEGRATION_VERSION
-    result["authentication_expiry_bucket"] = _expiry_bucket(credential, _utcnow())
+    result["authentication_expiry_bucket"] = (
+        _safe_expiry_bucket(credential) if runtime_complete else "unknown"
+    )
     result["wss_enabled"] = (
-        _safe_bool(getattr(runtime, "use_wss", False)) if runtime_complete else False
+        _safe_bool(_safe_getattr(runtime, "use_wss", False))
+        if runtime_complete
+        else False
     )
     result["wss_connected"] = (
-        _safe_bool(getattr(coordinator, "wss_connected", False))
+        _safe_bool(_safe_getattr(coordinator, "wss_connected", False))
         if runtime_complete
         else False
     )
     result["wss_healthy"] = (
-        _safe_bool(getattr(coordinator, "wss_healthy", False))
+        _safe_bool(_safe_getattr(coordinator, "wss_healthy", False))
         if runtime_complete
         else False
     )
     result["last_error_code"] = (
-        _safe_enum(getattr(coordinator, "last_error_code", "none"), _ERROR_CODES, "none")
+        _safe_enum(
+            _safe_getattr(coordinator, "last_error_code", "none"),
+            _ERROR_CODES,
+            "none",
+        )
         if runtime_complete
         else "none"
     )
     result["light_state_source"] = (
         _safe_enum(
-            getattr(coordinator, "light_state_source", "unknown"),
+            _safe_getattr(coordinator, "light_state_source", "unknown"),
             _STATE_SOURCES,
             "unknown",
         )
@@ -74,7 +82,7 @@ async def async_get_config_entry_diagnostics(
         else "unknown"
     )
     result["assumed_state"] = (
-        _safe_bool(getattr(coordinator, "assumed_state", False))
+        _safe_bool(_safe_getattr(coordinator, "assumed_state", False))
         if runtime_complete
         else False
     )
@@ -93,6 +101,20 @@ def _expiry_bucket(credential: object, now: datetime) -> ExpiryBucket:
     if remaining < _SEVEN_DAYS:
         return "<7d"
     return ">=7d"
+
+
+def _safe_expiry_bucket(credential: object) -> ExpiryBucket:
+    try:
+        return _expiry_bucket(credential, _utcnow())
+    except Exception:  # noqa: BLE001 - collapse secret-bearing runtime failures
+        return "unknown"
+
+
+def _safe_getattr(value: object, name: str, default: object) -> object:
+    try:
+        return getattr(value, name, default)
+    except Exception:  # noqa: BLE001 - never propagate property text into HA logs
+        return default
 
 
 def _safe_bool(value: object) -> bool:

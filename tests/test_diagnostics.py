@@ -9,6 +9,7 @@ from collections.abc import Coroutine, Generator
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
+from urllib.parse import quote
 
 import pytest
 
@@ -142,6 +143,75 @@ def test_unloaded_and_incomplete_runtime_keep_the_same_whitelist(
     assert all(secret not in json.dumps(result) for result in results)
 
 
+def test_diagnostics_fold_secret_bearing_attribute_and_time_errors_to_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch property or expiry failures escaping into Home Assistant diagnostics logs."""
+    secret = "synthetic-sensitive-exception-sentinel"
+
+    class ExplodingEntry:
+        @property
+        def runtime_data(self) -> object:
+            raise RuntimeError(secret)
+
+    class ExplodingCoordinator:
+        def __getattr__(self, name: str) -> object:
+            del name
+            raise RuntimeError(secret)
+
+    class ExplodingDateTime(datetime):
+        def __sub__(self, other: object) -> timedelta:
+            del other
+            raise RuntimeError(secret)
+
+    class ExplodingRuntime:
+        credential = _credential(ExplodingDateTime(2026, 9, 3, tzinfo=UTC))
+        coordinator = ExplodingCoordinator()
+
+        @property
+        def use_wss(self) -> bool:
+            raise RuntimeError(secret)
+
+    monkeypatch.setattr("custom_components.aupu_q360.diagnostics._utcnow", lambda: _NOW)
+    entries = (ExplodingEntry(), SimpleNamespace(runtime_data=ExplodingRuntime()))
+
+    results = [
+        _run(async_get_config_entry_diagnostics(None, cast(Any, entry))) for entry in entries
+    ]
+
+    expected = {
+        "integration_version": "0.1.0",
+        "authentication_expiry_bucket": "unknown",
+        "wss_enabled": False,
+        "wss_connected": False,
+        "wss_healthy": False,
+        "last_error_code": "none",
+        "light_state_source": "unknown",
+        "assumed_state": False,
+    }
+    assert results == [expected, expected]
+    assert all(secret not in json.dumps(result) for result in results)
+
+
+def test_incomplete_runtime_does_not_compute_credential_expiry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch a credential-only partial runtime exposing its expiry bucket."""
+    monkeypatch.setattr("custom_components.aupu_q360.diagnostics._utcnow", lambda: _NOW)
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(
+            credential=_credential(_NOW + timedelta(hours=1)),
+            coordinator=None,
+            use_wss=True,
+        )
+    )
+
+    result = _run(async_get_config_entry_diagnostics(None, cast(Any, entry)))
+
+    assert result["authentication_expiry_bucket"] == "unknown"
+    assert set(result) == _DIAGNOSTIC_KEYS
+
+
 @pytest.mark.parametrize(
     ("expires_at", "expected"),
     (
@@ -165,7 +235,7 @@ def test_expiry_diagnostics_use_only_coarse_boundary_buckets(
         runtime_data=SimpleNamespace(
             credential=_credential(expires_at),
             use_wss=False,
-            coordinator=None,
+            coordinator=SimpleNamespace(),
         )
     )
 
@@ -238,6 +308,66 @@ def test_secret_scanner_detects_each_regex_without_echoing_content(
     for hit_type in values:
         assert f"hit_type={hit_type}" in output.out
     assert "file=leaks.txt" in output.out
+
+
+@pytest.mark.parametrize(
+    "assignment_key",
+    (b"secret", b"database_secret", b"signature", b"app_signature", b"jwt", b"jwt_token"),
+)
+def test_secret_scanner_detects_high_value_assignments_without_echoing_values(
+    git_repository: Any,
+    capsys: pytest.CaptureFixture[str],
+    assignment_key: bytes,
+) -> None:
+    """Catch a generic high-value assignment key bypassing regex-only checkout scans."""
+    sentinel = b"PureAlphabetic" + b"AssignmentSentinel"
+    matching_line = assignment_key + b' = "' + sentinel + b'"'
+    _track(git_repository, "assignment.txt", matching_line)
+
+    result = check_no_secrets.run(git_repository, None, None)
+    output = capsys.readouterr()
+
+    assert result == 1
+    assert output.err == ""
+    assert "hit_type=assignment" in output.out
+    assert sentinel.decode() not in output.out
+    assert matching_line.decode() not in output.out
+
+
+def test_secret_scanner_detects_unquoted_high_value_assignment(
+    git_repository: Any,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Catch an environment-style secret assignment bypassing quoted-value scans."""
+    sentinel = b"UnquotedAlphabetic" + b"AssignmentSentinel"
+    matching_line = b"DATABASE_" + b"SECRET=" + sentinel
+    _track(git_repository, "environment.txt", matching_line)
+
+    result = check_no_secrets.run(git_repository, None, None)
+    output = capsys.readouterr()
+
+    assert result == 1
+    assert output.err == ""
+    assert "hit_type=assignment" in output.out
+    assert sentinel.decode() not in output.out
+    assert matching_line.decode() not in output.out
+
+
+def test_secret_scanner_detects_encrypted_private_key_header_without_echoing_it(
+    git_repository: Any,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Catch a standard encrypted PKCS private key header bypassing the regex gate."""
+    header = b"-----BEGIN " + b"ENCRYPTED PRIVATE KEY-----"
+    _track(git_repository, "encrypted-key.txt", header)
+
+    result = check_no_secrets.run(git_repository, None, None)
+    output = capsys.readouterr()
+
+    assert result == 1
+    assert output.err == ""
+    assert "hit_type=private_key" in output.out
+    assert header.decode() not in output.out
 
 
 def test_secret_scanner_allows_only_known_synthetic_values_and_skips_untracked_files(
@@ -325,6 +455,143 @@ def test_secret_scanner_compares_private_json_and_har_values_only_in_memory(
     assert "hit_type=exact_private_value" in output.out
     assert private_candidate.decode() not in output.out
     assert har_candidate.decode() not in output.out
+
+
+def _write_har_captures(capture_root: Any, request: dict[str, object]) -> None:
+    for relative in check_no_secrets.CAPTURE_FILES:
+        path = capture_root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"log": {"entries": [{"request": request}]}}),
+            encoding="utf-8",
+        )
+
+
+def test_har_candidate_extraction_is_schema_aware_for_sensitive_value_aliases(
+    tmp_path: Any,
+) -> None:
+    """Catch missing aliases and cookie metadata being treated as secret candidates."""
+    values = {
+        "signature": "PureAlphabetic" + "HarSignatureSentinel",
+        "phone": "139" + "8642" + "7531",
+        "device": "device-identifier-" + "synthetic",
+        "cookie": "cookie-value-" + "synthetic",
+        "jwt": "ShortJwt",
+    }
+    public_metadata = {
+        "domain": "public-cookie-domain.invalid",
+        "path": "/public-cookie-path",
+    }
+    request: dict[str, object] = {
+        "url": "https://example.invalid/path",
+        "headers": [{"name": "X-App-Sign", "value": values["signature"]}],
+        "queryString": [{"name": "mobileNumber", "value": values["phone"]}],
+        "cookies": [
+            {
+                "name": "route",
+                "value": values["cookie"],
+                **public_metadata,
+            }
+        ],
+        "postData": {
+            "params": [{"name": "deviceIdentifier", "value": values["device"]}],
+            "text": json.dumps({"jwt": values["jwt"]}),
+        },
+    }
+    capture_root = tmp_path / "schema-aware-captures"
+    _write_har_captures(capture_root, request)
+    captured = json.loads((capture_root / check_no_secrets.CAPTURE_FILES[0]).read_text())
+
+    candidates = set(check_no_secrets._har_sensitive_strings(captured))
+    classified, available = check_no_secrets._private_candidates(None, capture_root)
+    by_value = {candidate.value: candidate for candidate in classified}
+
+    assert set(values.values()) <= candidates
+    assert set(public_metadata.values()).isdisjoint(candidates)
+    assert available is True
+    assert by_value[values["signature"]].source == "har_header"
+    assert by_value[values["signature"]].sensitivity == "high"
+    assert by_value[values["phone"]].source == "har_query"
+    assert by_value[values["phone"]].sensitivity == "low"
+    assert by_value[values["device"]].source == "har_parameter"
+    assert by_value[values["device"]].sensitivity == "low"
+    assert by_value[values["cookie"]].source == "har_cookie"
+    assert by_value[values["cookie"]].sensitivity == "low"
+    assert by_value[values["jwt"]].source == "har_json"
+    assert by_value[values["jwt"]].sensitivity == "high"
+    classified.clear()
+
+
+@pytest.mark.parametrize("case", ("pure_alpha", "short_token", "json", "url"))
+def test_exact_private_candidate_matches_each_controlled_serialization(
+    git_repository: Any,
+    capsys: pytest.CaptureFixture[str],
+    case: str,
+) -> None:
+    """Catch one high-value raw, short, JSON, or URL form being omitted."""
+    cases = {
+        "pure_alpha": (
+            "app_key",
+            "PureAlphabetic" + "SignerSentinel",
+            lambda value: value.encode(),
+        ),
+        "short_token": ("token", "ShortTok", lambda value: value.encode()),
+        "json": (
+            "key_prefix",
+            "JsonQuote" + '"' + "Slash" + "\\" + "Sentinel",
+            lambda value: json.dumps(value).encode(),
+        ),
+        "url": (
+            "key_suffix",
+            "Url Value/" + "SignerSentinel",
+            lambda value: quote(value, safe="").encode(),
+        ),
+    }
+    field_name, candidate, serialize = cases[case]
+    private_file = git_repository / ".private" / "signer_secrets.json"
+    private_file.parent.mkdir(parents=True)
+    private_file.write_text(
+        json.dumps({field_name: candidate}),
+        encoding="utf-8",
+    )
+    tracked = b"serialized-field=" + serialize(candidate)
+    _track(git_repository, "serialized-values.txt", tracked)
+
+    result = check_no_secrets.run(git_repository, git_repository, None)
+    output = capsys.readouterr()
+
+    assert result == 1
+    assert output.err == ""
+    assert "hit_type=exact_private_value" in output.out
+    assert candidate not in output.out
+    assert tracked.decode() not in output.out
+
+
+def test_low_information_private_candidate_does_not_match_public_prose(
+    git_repository: Any,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Catch low-information signer format text reverting to arbitrary substring scans."""
+    low_information = "formatlabel"
+    private_file = git_repository / ".private" / "signer_secrets.json"
+    private_file.parent.mkdir(parents=True)
+    private_file.write_text(
+        json.dumps({"sdk_label": low_information}),
+        encoding="utf-8",
+    )
+    _track(
+        git_repository,
+        "public-prose.txt",
+        ("prefix-" + low_information + "-suffix").encode(),
+    )
+
+    result = check_no_secrets.run(git_repository, git_repository, None)
+    output = capsys.readouterr()
+
+    assert result == 0
+    assert output.err == ""
+    assert "sensitive_hit_count=0" in output.out
+    assert low_information not in output.out
 
 
 def test_secret_scanner_fails_closed_for_git_errors_and_missing_ignore_rules(

@@ -11,9 +11,10 @@ import subprocess
 import tempfile
 from collections import Counter
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any
-from urllib.parse import parse_qsl, urlsplit
+from typing import Any, Literal
+from urllib.parse import parse_qsl, quote, quote_plus, urlsplit
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CAPTURE_FILES = (
@@ -54,7 +55,7 @@ _PATTERNS = {
         rb"(?<![A-Za-z0-9])1[3-9][0-9]{9}(?![A-Za-z0-9])"
     ),
     "private_key": re.compile(
-        rb"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----"
+        rb"-----BEGIN (?:ENCRYPTED |RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----"
     ),
     "app_authorization": re.compile(
         rb"\bApp-Authorization\b[ \t\"']*[:=][ \t\"']*"
@@ -62,11 +63,18 @@ _PATTERNS = {
         re.IGNORECASE,
     ),
     "assignment": re.compile(
-        rb"\b(?:token|api[_-]?token|access[_-]?token|refresh[_-]?token|"
-        rb"auth[_-]?token|cookie|client[_-]?secret|api[_-]?secret|password)"
-        rb"[ \t\"']*[:=][ \t\"']+"
-        rb"[A-Za-z0-9._~+/=-]{20,}",
-        re.IGNORECASE,
+        rb"\b(?:"
+        rb"(?:[A-Za-z][A-Za-z0-9]*[_-])?(?:secret|signature)|"
+        rb"jwt(?:[_-]?token)?|id[_-]?token|private[_-]?key|"
+        rb"token|api[_-]?token|access[_-]?token|refresh[_-]?token|"
+        rb"auth[_-]?token|cookie|password)\b(?:"
+        rb"[ \t\"']*:[ \t]*[\"']"
+        rb"(?P<assignment_colon>[A-Za-z0-9._~+/=-]{20,})[\"']|"
+        rb"[ \t]*=[ \t]*(?:[\"']"
+        rb"(?P<assignment_quoted>[A-Za-z0-9._~+/=-]{20,})[\"']|"
+        rb"(?P<assignment_unquoted>[A-Za-z0-9._~+/=-]{20,})"
+        rb"(?=[ \t]*(?:[#;][^\r\n]*)?\r?$)))",
+        re.IGNORECASE | re.MULTILINE,
     ),
 }
 
@@ -77,24 +85,103 @@ _ALLOWED_SYNTHETIC_VALUES = frozenset(
         + b"syntheticFixtureSignature",
         b"Bearer " + b"synthetic-fixture-token-" + b"000000000",
         b"138" + b"0000" + b"0000",
+        b"synthetic-sensitive-" + b"exception-sentinel",
+        b"unloaded-" + b"private-value",
+        b"synthetic-signature-" + b"secret",
+        b"synthetic-signature-" + b"1",
     }
 )
-_SENSITIVE_NAME_PARTS = (
+_SENSITIVE_NAMES = frozenset(
+    {
     "authorization",
+    "appauthorization",
     "bearer",
     "token",
+    "accesstoken",
+    "refreshtoken",
+    "authtoken",
+    "idtoken",
+    "jwt",
     "cookie",
     "session",
+    "sessionid",
+    "jsessionid",
+    "sign",
+    "sig",
     "signature",
+    "signaturevalue",
+    "appsignature",
+    "xappsign",
     "phone",
+    "phonenumber",
+    "mobile",
+    "mobilenumber",
+    "mobilephone",
+    "cellphone",
+    "msisdn",
     "did",
     "deviceid",
+    "deviceidentifier",
+    "deviceuuid",
     "clientid",
     "useruuid",
     "credential",
     "secret",
     "appkey",
+    }
 )
+_LOW_SIGNER_FIELDS = frozenset(
+    {
+        "packagename",
+        "sdkversion",
+        "messageprefix",
+        "sdklabel",
+        "typetimestamplabel",
+        "headerprefix",
+        "headersep1",
+        "headersep2",
+        "signaturelabel",
+    }
+)
+_IDENTIFIER_NAMES = frozenset(
+    {
+        "phone",
+        "phonenumber",
+        "mobile",
+        "mobilenumber",
+        "mobilephone",
+        "cellphone",
+        "msisdn",
+        "did",
+        "deviceid",
+        "deviceidentifier",
+        "deviceuuid",
+        "clientid",
+        "useruuid",
+        "cookie",
+        "session",
+        "sessionid",
+        "jsessionid",
+    }
+)
+
+CandidateSource = Literal[
+    "signer",
+    "har_header",
+    "har_query",
+    "har_parameter",
+    "har_cookie",
+    "har_json",
+]
+CandidateSensitivity = Literal["high", "low"]
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class _PrivateCandidate:
+    value: str
+    source: CandidateSource
+    sensitivity: CandidateSensitivity
+    field_name: str
 
 
 class ScanFailure(Exception):
@@ -192,57 +279,128 @@ def _normalized_name(value: str) -> str:
 
 
 def _is_sensitive_name(value: str) -> bool:
-    normalized = _normalized_name(value)
-    return any(part in normalized for part in _SENSITIVE_NAME_PARTS)
+    return _normalized_name(value) in _SENSITIVE_NAMES
 
 
 def _har_sensitive_strings(value: object) -> Iterable[str]:
+    for _, _, sensitive_value in _har_sensitive_items(value):
+        yield sensitive_value
+
+
+def _har_sensitive_items(value: object) -> Iterable[tuple[CandidateSource, str, str]]:
     if isinstance(value, Mapping):
-        name = value.get("name")
-        if isinstance(name, str) and _is_sensitive_name(name):
-            yield from _all_non_empty_strings(value.get("value"))
         for key, nested in value.items():
             if not isinstance(key, str):
                 continue
-            if _is_sensitive_name(key):
-                yield from _all_non_empty_strings(nested)
-            else:
-                yield from _har_sensitive_strings(nested)
-            if key.lower() == "url" and isinstance(nested, str):
+            normalized_key = _normalized_name(key)
+            if normalized_key == "headers":
+                yield from _named_har_values(nested, "har_header")
+            elif normalized_key == "querystring":
+                yield from _named_har_values(nested, "har_query")
+            elif normalized_key in {"params", "parameters"}:
+                yield from _named_har_values(nested, "har_parameter")
+            elif normalized_key == "cookies":
+                yield from _cookie_har_values(nested)
+            elif normalized_key == "url" and isinstance(nested, str):
                 try:
                     for query_name, query_value in parse_qsl(
                         urlsplit(nested).query, keep_blank_values=False
                     ):
                         if query_value and _is_sensitive_name(query_name):
-                            yield query_value
+                            yield "har_query", query_name, query_value
                 except ValueError:
                     continue
-            if key.lower() in {"text", "body"} and isinstance(nested, str):
+            elif normalized_key in {"text", "body"} and isinstance(nested, str):
                 stripped = nested.lstrip()
                 if stripped.startswith(("{", "[")):
                     try:
                         embedded = json.loads(nested)
                     except json.JSONDecodeError:
                         continue
-                    yield from _har_sensitive_strings(embedded)
+                    yield from _json_sensitive_items(embedded)
+            else:
+                yield from _har_sensitive_items(nested)
         return
     if isinstance(value, list):
         for nested in value:
-            yield from _har_sensitive_strings(nested)
+            yield from _har_sensitive_items(nested)
+
+
+def _named_har_values(
+    value: object,
+    source: Literal["har_header", "har_query", "har_parameter"],
+) -> Iterable[tuple[CandidateSource, str, str]]:
+    if not isinstance(value, list):
+        return
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        name = item.get("name")
+        candidate = item.get("value")
+        if (
+            isinstance(name, str)
+            and isinstance(candidate, str)
+            and candidate
+            and _is_sensitive_name(name)
+        ):
+            yield source, name, candidate
+
+
+def _cookie_har_values(value: object) -> Iterable[tuple[CandidateSource, str, str]]:
+    if not isinstance(value, list):
+        return
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        candidate = item.get("value")
+        name = item.get("name")
+        if isinstance(candidate, str) and candidate:
+            yield "har_cookie", name if isinstance(name, str) else "cookie", candidate
+
+
+def _json_sensitive_items(value: object) -> Iterable[tuple[CandidateSource, str, str]]:
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            if not isinstance(key, str):
+                continue
+            if _is_sensitive_name(key) and isinstance(nested, str) and nested:
+                yield "har_json", key, nested
+            elif isinstance(nested, Mapping | list):
+                yield from _json_sensitive_items(nested)
+        return
+    if isinstance(value, list):
+        for nested in value:
+            yield from _json_sensitive_items(nested)
+
+
+def _signer_candidates(value: object, field_name: str = "value") -> Iterable[_PrivateCandidate]:
+    if isinstance(value, str):
+        if value:
+            sensitivity: CandidateSensitivity = (
+                "low" if _normalized_name(field_name) in _LOW_SIGNER_FIELDS else "high"
+            )
+            yield _PrivateCandidate(value, "signer", sensitivity, field_name)
+        return
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            yield from _signer_candidates(nested, str(key))
+        return
+    if isinstance(value, list):
+        for nested in value:
+            yield from _signer_candidates(nested, field_name)
 
 
 def _private_candidates(
     private_project_root: Path | None,
     capture_root: Path | None,
-) -> tuple[list[bytes], bool]:
-    candidates: set[bytes] = set()
+) -> tuple[list[_PrivateCandidate], bool]:
+    candidates: set[_PrivateCandidate] = set()
     available = False
     if private_project_root is not None:
         secrets_path = private_project_root / _SECRETS_FILE
         if secrets_path.is_file():
             available = True
-            for value in _all_non_empty_strings(_read_json(secrets_path)):
-                candidates.add(value.encode("utf-8"))
+            candidates.update(_signer_candidates(_read_json(secrets_path)))
 
     if capture_root is not None:
         capture_paths = [capture_root / relative_path for relative_path in CAPTURE_FILES]
@@ -252,14 +410,24 @@ def _private_candidates(
             if not all(existing):
                 raise ScanFailure
             for capture_path in capture_paths:
-                for value in _har_sensitive_strings(_read_json(capture_path)):
-                    candidates.add(value.encode("utf-8"))
+                for source, field_name, value in _har_sensitive_items(
+                    _read_json(capture_path)
+                ):
+                    sensitivity: CandidateSensitivity = (
+                        "low"
+                        if source == "har_cookie"
+                        or _normalized_name(field_name) in _IDENTIFIER_NAMES
+                        else "high"
+                    )
+                    candidates.add(
+                        _PrivateCandidate(value, source, sensitivity, field_name)
+                    )
     return list(candidates), available
 
 
 def _scan_files(
     tracked_files: list[tuple[str, Path]],
-    private_candidates: list[bytes],
+    private_candidates: list[_PrivateCandidate],
 ) -> Counter[tuple[str, str]]:
     hits: Counter[tuple[str, str]] = Counter()
     try:
@@ -284,6 +452,23 @@ def _allowed_match(hit_type: str, content: bytes, match: re.Match[bytes]) -> boo
     matched = match.group(0)
     if matched in _ALLOWED_SYNTHETIC_VALUES:
         return True
+    if (
+        hit_type == "assignment"
+        and next(
+            (
+                value
+                for value in (
+                    match.group("assignment_colon"),
+                    match.group("assignment_quoted"),
+                    match.group("assignment_unquoted"),
+                )
+                if value is not None
+            ),
+            None,
+        )
+        in _ALLOWED_SYNTHETIC_VALUES
+    ):
+        return True
     if hit_type != "phone":
         return False
     line_start = content.rfind(b"\n", 0, match.start()) + 1
@@ -291,22 +476,69 @@ def _allowed_match(hit_type: str, content: bytes, match: re.Match[bytes]) -> boo
     return re.search(rb"\bsize[ \t]*=[ \t]*$", prefix, re.IGNORECASE) is not None
 
 
-def _private_candidate_occurs(candidate: bytes, content: bytes) -> bool:
-    if not candidate:
+def _private_candidate_occurs(candidate: _PrivateCandidate, content: bytes) -> bool:
+    raw = candidate.value.encode("utf-8")
+    if candidate.sensitivity == "high":
+        return any(variant in content for variant in _candidate_variants(candidate.value))
+    if content.strip() == raw:
+        return True
+    try:
+        decoded = content.decode("utf-8")
+    except UnicodeDecodeError:
         return False
-    if len(candidate) < 12:
-        return content.strip() == candidate
-    has_alpha = any(65 <= value <= 90 or 97 <= value <= 122 for value in candidate)
-    has_digit = any(48 <= value <= 57 for value in candidate)
-    if has_alpha and has_digit:
-        return candidate in content
-    if has_digit:
-        return (
-            content.strip() == candidate
-            or b'"' + candidate + b'"' in content
-            or b"'" + candidate + b"'" in content
-        )
-    return content.strip() == candidate
+    try:
+        document = json.loads(decoded)
+    except json.JSONDecodeError:
+        document = None
+    if _json_document_contains_candidate(document, candidate):
+        return True
+    stripped = decoded.strip()
+    try:
+        query = parse_qsl(urlsplit(stripped).query, keep_blank_values=True)
+    except ValueError:
+        return False
+    expected_name = _normalized_name(candidate.field_name)
+    return any(
+        _normalized_name(name) == expected_name and value == candidate.value
+        for name, value in query
+    )
+
+
+def _json_document_contains_candidate(
+    value: object,
+    candidate: _PrivateCandidate,
+) -> bool:
+    if isinstance(value, Mapping):
+        expected_name = _normalized_name(candidate.field_name)
+        for key, nested in value.items():
+            if (
+                isinstance(key, str)
+                and _normalized_name(key) == expected_name
+                and nested == candidate.value
+            ):
+                return True
+            if candidate.source == "har_cookie" and key == "value" and nested == candidate.value:
+                name = value.get("name")
+                if isinstance(name, str) and _normalized_name(name) == expected_name:
+                    return True
+            if _json_document_contains_candidate(nested, candidate):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(_json_document_contains_candidate(item, candidate) for item in value)
+    return False
+
+
+def _candidate_variants(value: str) -> frozenset[bytes]:
+    return frozenset(
+        {
+            value.encode("utf-8"),
+            json.dumps(value, ensure_ascii=True).encode("utf-8"),
+            json.dumps(value, ensure_ascii=False).encode("utf-8"),
+            quote(value, safe="").encode("ascii"),
+            quote_plus(value, safe="").encode("ascii"),
+        }
+    )
 
 
 def _safe_relative_path(value: str) -> str:
