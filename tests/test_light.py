@@ -344,10 +344,12 @@ def test_start_reconciles_repairs_for_each_jwt_state(
     raises_auth: bool,
 ) -> None:
     """Catch reload leaving stale issues or creating the wrong Repair severity."""
+    reauth_requests: list[None] = []
     coordinator = _coordinator(
         FakeApi(),
         _credential(offset),
         entry_id="entry-a",
+        reauth_requests=reauth_requests,
     )
 
     if raises_auth:
@@ -357,12 +359,15 @@ def test_start_reconciles_repairs_for_each_jwt_state(
         _run(coordinator.async_start())
 
     if created_id is None:
+        assert reauth_requests == []
         assert issues.created == []
         assert issues.deleted == [
             (DOMAIN, "entry-a_jwt_expiring"),
             (DOMAIN, "entry-a_jwt_expired"),
         ]
         return
+
+    assert reauth_requests == ([None] if raises_auth else [])
 
     assert len(issues.created) == 1
     domain, issue_id, kwargs = issues.created[0]

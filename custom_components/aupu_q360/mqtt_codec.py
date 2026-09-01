@@ -42,8 +42,15 @@ class MqttPacket:
 class MqttPacketDecoder:
     """Incrementally decode complete MQTT packets without losing partial frames."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, max_packet_size: int | None = None) -> None:
+        if max_packet_size is not None and (
+            not isinstance(max_packet_size, int)
+            or isinstance(max_packet_size, bool)
+            or max_packet_size < 2
+        ):
+            raise AupuProtocolError
         self._buffer = bytearray()
+        self._max_packet_size = max_packet_size
 
     @property
     def buffered_bytes(self) -> int:
@@ -54,6 +61,10 @@ class MqttPacketDecoder:
         """Consume one frame and return every complete packet it contains."""
         if not isinstance(data, bytes):
             raise AupuProtocolError
+        if self._max_packet_size is not None and len(data) > self._max_packet_size - len(
+            self._buffer
+        ):
+            raise AupuProtocolError
         self._buffer.extend(data)
         packets: list[MqttPacket] = []
         while self._buffer:
@@ -63,6 +74,8 @@ class MqttPacketDecoder:
                 break
             remaining_length, header_length = remaining
             packet_length = 1 + header_length + remaining_length
+            if self._max_packet_size is not None and packet_length > self._max_packet_size:
+                raise AupuProtocolError
             if len(self._buffer) < packet_length:
                 break
             body = bytes(self._buffer[1 + header_length : packet_length])

@@ -567,6 +567,48 @@ def test_options_valid_token_and_phone_update_atomically(
     assert hass.config_entries.reload_calls == 1
 
 
+@pytest.mark.parametrize("phone", ["1380000000", "1380000000a", "１３８００００００００"])
+def test_options_rejects_invalid_phone_without_persisting_or_sending_sms(
+    phone: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch Options bypassing the same eleven-ASCII-digit validation used by Reauth."""
+    old_data = persisted_data()
+    entry = FakeEntry(data=dict(old_data))
+    flow, hass = prepare_options_flow(entry)
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.async_get_clientsession",
+        lambda _: object(),
+    )
+
+    result = _run(flow.async_step_init({"token": "", "phone": phone, "use_wss": False}))
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "invalid_phone"}
+    assert entry.data == old_data
+    assert hass.config_entries.update_calls == 0
+    assert hass.config_entries.reload_calls == 0
+
+
+def test_options_whitespace_phone_clears_persisted_value_without_sending_sms(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch whitespace being retained instead of clearing the optional local phone."""
+    old_data = {**persisted_data(), "phone": "13800000000"}
+    entry = FakeEntry(data=dict(old_data))
+    flow, hass = prepare_options_flow(entry)
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.async_get_clientsession",
+        lambda _: object(),
+    )
+
+    result = _run(flow.async_step_init({"token": "", "phone": "  ", "use_wss": False}))
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert "phone" not in entry.data
+    assert hass.config_entries.update_calls == 1
+    assert hass.config_entries.reload_calls == 1
+
+
 def test_https_only_options_preserve_sms_login_user_uuid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

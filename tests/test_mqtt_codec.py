@@ -149,6 +149,39 @@ def test_streaming_decoder_handles_multiple_packets_and_split_packet() -> None:
     assert decoder.buffered_bytes == 0
 
 
+def test_limited_decoder_accepts_packet_exactly_at_configured_boundary() -> None:
+    """Catch an inclusive packet limit rejecting the largest permitted packet."""
+    decoder = MqttPacketDecoder(max_packet_size=8)
+
+    assert decoder.feed(b"\x30\x06\x00\x01aXYZ") == [
+        MqttPacket(packet_type=PacketType.PUBLISH, flags=0, topic="a", payload=b"XYZ")
+    ]
+    assert decoder.buffered_bytes == 0
+
+
+def test_limited_decoder_rejects_declared_packet_before_allocating_body() -> None:
+    """Catch a peer declaring a packet larger than the runtime resource budget."""
+    decoder = MqttPacketDecoder(max_packet_size=8)
+
+    with pytest.raises(AupuProtocolError) as raised:
+        decoder.feed(b"\x30\x07")
+
+    assert str(raised.value) == "Service response is invalid"
+    assert decoder.buffered_bytes == 2
+
+
+def test_limited_decoder_rejects_cross_frame_buffer_growth() -> None:
+    """Catch an unfinished packet growing beyond the cumulative buffer budget."""
+    decoder = MqttPacketDecoder(max_packet_size=8)
+
+    assert decoder.feed(b"\x30\x06\x00\x01aXY") == []
+    with pytest.raises(AupuProtocolError) as raised:
+        decoder.feed(b"ZZ")
+
+    assert str(raised.value) == "Service response is invalid"
+    assert decoder.buffered_bytes == 7
+
+
 @pytest.mark.parametrize(
     "packet",
     [

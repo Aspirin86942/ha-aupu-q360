@@ -84,6 +84,7 @@
     "error": {
       "invalid_token": "Token 无效。",
       "expired_token": "Token 已过期。",
+      "invalid_phone": "手机号必须恰好包含 11 位 ASCII 数字。",
       "cannot_connect": "只读连接检查失败，原有设置未改变。"
     },
     "abort": {
@@ -94,7 +95,7 @@
   "issues": {
     "jwt_expiring": {
       "title": "奥普 Token 即将过期",
-      "description": "本地保存的奥普 Token 将在 24 小时内过期。请使用短信重新认证或输入手工 Token，以保持照明控制可用。"
+      "description": "本地保存的奥普 Token 将在 24 小时内过期。到期前请通过集成选项手工输入新 Token；本告警不会启动短信重新认证流程。"
     },
     "jwt_expired": {
       "title": "奥普 Token 已过期",

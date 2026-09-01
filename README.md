@@ -45,9 +45,11 @@ Git，不要发到 Issue、日志、截图或聊天。默认的 HTTPS-only 配�
 
 JWT 会随 Config Entry 持久保存，因此 Home Assistant 重启后仍可使用；但 JWT 不是永久凭据，
 集成不会自动刷新或自动续期。即将到期与已经到期分别显示 `jwt_expiring`、`jwt_expired`
-Repair，控制会在凭据失效时停止。
+Repair，控制会在凭据失效时停止。`jwt_expiring` 只是提前告警：到期前只能通过 Options 手工更新 Token；
+即将到期告警不会启动 Repair fix flow 或短信 Reauth。
 
-Repair 触发后可选择：
+短信或手工 Reauth 只会在 Token 已过期、远端鉴权失败或缺少 WSS user UUID 时由 HA 启动。
+进入 Reauth 后可选择：
 
 - 短信 Reauth：提交手机号后才发送一条验证码，同一 flow 内 60 秒限发；验证码 5 分钟后在
   本地过期且不会保存。集成不会自动读取短信。手机号仅在用户明确勾选时保存。

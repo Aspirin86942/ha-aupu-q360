@@ -24,7 +24,7 @@ from custom_components.aupu_q360.mqtt_codec import (
     encode_publish,
 )
 from custom_components.aupu_q360.shadow import LightShadowUpdate
-from custom_components.aupu_q360.wss import AupuShadowWebSocket
+from custom_components.aupu_q360.wss import _MAX_WSS_PACKET_BYTES, AupuShadowWebSocket
 
 WSS_ENDPOINT = "wss://aii5h05kuofsj.ats.iot.cn-north-1.amazonaws.com.cn/mqtt"
 DEVICE = DeviceConfig(did="123456789", tag="synthetic-tag")
@@ -356,6 +356,49 @@ async def test_ping_send_failure_cancels_receive_and_reconnects() -> None:
     await _wait_until(lambda: sleep.delays == [30, 2])
 
     assert websocket.sent[-2:] == [b"\xc0\x00", b"\xe0\x00"]
+    assert websocket.close_calls == 1
+    await client.async_stop()
+
+
+@direct_step
+async def test_missing_pingresp_closes_backs_off_and_reconnects() -> None:
+    """Catch a writable half-open socket preventing WSS self-recovery forever."""
+    silent = _ready_socket()
+    replacement = _ready_socket()
+    sleep = ControlledSleep()
+    session = FakeSession([silent, replacement])
+    client = _client(api=FakeApi(), session=session, sleep=sleep)
+
+    await client.async_start()
+    await _wait_until(lambda: sleep.delays == [30])
+    await sleep.release_next()
+    await _wait_until(lambda: sleep.delays == [30, 10])
+    await sleep.release_next()
+    await _wait_until(lambda: sleep.delays == [30, 10, 2])
+
+    assert silent.sent[-2:] == [b"\xc0\x00", b"\xe0\x00"]
+    assert silent.close_calls == 1
+
+    await sleep.release_next()
+    await _wait_until(lambda: len(session.calls) == 2)
+    assert len(replacement.sent) == 4
+    await client.async_stop()
+
+
+@direct_step
+async def test_oversized_declared_packet_closes_and_enters_reconnect_backoff() -> None:
+    """Catch WSS omitting the runtime decoder limit or failing to clean up on violation."""
+    websocket = _ready_socket()
+    sleep = ControlledSleep()
+    client = _client(api=FakeApi(), session=FakeSession([websocket]), sleep=sleep)
+
+    await client.async_start()
+    await _wait_until(lambda: sleep.delays == [30])
+    websocket.queue_binary(b"\x30" + bytes((0x80, 0x80, 0x04)))
+    await _wait_until(lambda: sleep.delays == [30, 2])
+
+    assert _MAX_WSS_PACKET_BYTES == 64 * 1024
+    assert websocket.sent[-1] == b"\xe0\x00"
     assert websocket.close_calls == 1
     await client.async_stop()
 

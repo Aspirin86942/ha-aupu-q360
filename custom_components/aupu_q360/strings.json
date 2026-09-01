@@ -84,6 +84,7 @@
     "error": {
       "invalid_token": "The token is invalid.",
       "expired_token": "The token has expired.",
+      "invalid_phone": "The phone number must contain exactly 11 ASCII digits.",
       "cannot_connect": "The read-only connection check failed. Existing settings were not changed."
     },
     "abort": {
@@ -94,7 +95,7 @@
   "issues": {
     "jwt_expiring": {
       "title": "AUPU token expires soon",
-      "description": "The local AUPU token expires within 24 hours. Use SMS reauthentication or enter a manual Token to keep control available."
+      "description": "The local AUPU token expires within 24 hours. Before expiry, use the integration Options to enter a new Token manually. This warning does not start an SMS reauthentication flow."
     },
     "jwt_expired": {
       "title": "AUPU token expired",

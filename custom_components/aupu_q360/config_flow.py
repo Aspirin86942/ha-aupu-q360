@@ -490,7 +490,12 @@ class AupuOptionsFlow(config_entries.OptionsFlow):
         try:
             submitted_token = user_input.get(_CONF_TOKEN, "")
             token = _parse_token(current.token if submitted_token == "" else submitted_token)
-            phone = user_input.get(_CONF_PHONE, current.phone)
+            submitted_phone = user_input.get(_CONF_PHONE, current.phone)
+            phone = (
+                None
+                if isinstance(submitted_phone, str) and not submitted_phone.strip()
+                else _parse_phone(submitted_phone)
+            )
             use_wss = user_input.get(_CONF_USE_WSS, current.use_wss)
             candidate = AupuConfigEntryData.from_mapping(
                 {

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -61,6 +62,22 @@ def test_manifest_is_hacs_installable(project_root: Path) -> None:
     assert "issue_tracker" not in manifest
 
 
+def test_python_floor_and_lock_exclude_obsolete_ha_resolution(project_root: Path) -> None:
+    """Catch supported Python versions resolving the obsolete HA development branch."""
+    pyproject = tomllib.loads((project_root / "pyproject.toml").read_text(encoding="utf-8"))
+    lock = tomllib.loads((project_root / "uv.lock").read_text(encoding="utf-8"))
+    manifest = _load_json(project_root / "custom_components/aupu_q360/manifest.json")
+
+    assert pyproject["project"]["requires-python"] == ">=3.13.2"
+    assert lock["requires-python"] == ">=3.13.2"
+    assert all(
+        "python_full_version < '3.13.2'" not in str(package.get("resolution-markers", ""))
+        and "python_full_version < '3.13.2'" not in str(package.get("marker", ""))
+        for package in lock["package"]
+    )
+    assert manifest["requirements"] == []
+
+
 def test_english_and_simplified_chinese_flow_keys_match(project_root: Path) -> None:
     """Catch a flow branch becoming unavailable in one language."""
     strings = _load_json(project_root / "custom_components/aupu_q360/strings.json")
@@ -102,6 +119,7 @@ def test_english_and_simplified_chinese_flow_keys_match(project_root: Path) -> N
     assert set(options["error"]) == {
         "invalid_token",
         "expired_token",
+        "invalid_phone",
         "cannot_connect",
     }
     assert set(options["abort"]) == {"invalid_state", "invalid_entry"}
@@ -143,10 +161,22 @@ def test_readme_documents_safe_offline_install_and_operations(project_root: Path
         assert required_text in readme
 
     assert "不会自动刷新或自动续期" in readme
+    assert "到期前只能通过 Options 手工更新 Token" in readme
+    assert "即将到期告警不会启动 Repair fix flow 或短信 Reauth" in readme
+    assert "已过期、远端鉴权失败或缺少 WSS user UUID" in readme
     assert not re.search(r"(?<!不)会自动刷新|将自动刷新|可自动刷新|支持自动刷新", readme)
     assert not re.search(r"\b1[3-9]\d{9}\b", readme)
     assert not re.search(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b", readme)
     assert not re.search(r"https://github\.com/[^/\s]+/[^/\s]+", readme)
+
+    strings = _load_json(project_root / "custom_components/aupu_q360/strings.json")
+    translation = _load_json(project_root / "custom_components/aupu_q360/translations/zh-Hans.json")
+    english_expiring = strings["issues"]["jwt_expiring"]["description"]
+    chinese_expiring = translation["issues"]["jwt_expiring"]["description"]
+    assert "Options" in english_expiring
+    assert "does not start an SMS reauthentication flow" in english_expiring
+    assert "选项" in chinese_expiring
+    assert "不会启动短信重新认证流程" in chinese_expiring
 
     release_steps = (
         "发布到真实 GitHub 仓库",

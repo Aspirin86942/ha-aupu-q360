@@ -29,6 +29,8 @@ from .shadow import LightShadowUpdate
 _WSS_ENDPOINT = "wss://aii5h05kuofsj.ats.iot.cn-north-1.amazonaws.com.cn/mqtt"
 _RETRY_DELAYS = (2.0, 4.0, 8.0, 16.0, 30.0)
 _KEEP_ALIVE_SECONDS = 30
+_PINGRESP_TIMEOUT_SECONDS = 10
+_MAX_WSS_PACKET_BYTES = 64 * 1024
 _LOGGER = logging.getLogger(__name__)
 
 ConnectionCallback = Callable[[bool, bool], None]
@@ -148,8 +150,9 @@ class AupuShadowWebSocket:
         finally:
             del params, credentials, raw_token, client_id
 
-        decoder = MqttPacketDecoder()
+        decoder = MqttPacketDecoder(max_packet_size=_MAX_WSS_PACKET_BYTES)
         pending: deque[MqttPacket] = deque()
+        ping = _PingTracker()
         mqtt_connected = False
         ping_task: asyncio.Task[None] | None = None
         receive_task: asyncio.Task[None] | None = None
@@ -186,9 +189,11 @@ class AupuShadowWebSocket:
                 )
             )
             self._async_connection_changed(True, False)
-            ping_task = asyncio.create_task(self._ping_loop(websocket), name="aupu_q360_wss_ping")
+            ping_task = asyncio.create_task(
+                self._ping_loop(websocket, ping), name="aupu_q360_wss_ping"
+            )
             receive_task = asyncio.create_task(
-                self._receive_loop(websocket, decoder, pending),
+                self._receive_loop(websocket, decoder, pending, ping),
                 name="aupu_q360_wss_receive",
             )
             session_tasks = {ping_task, receive_task}
@@ -217,21 +222,48 @@ class AupuShadowWebSocket:
                 pass
             self._async_connection_changed(False, False)
 
-    async def _ping_loop(self, websocket: aiohttp.ClientWebSocketResponse) -> None:
+    async def _ping_loop(
+        self,
+        websocket: aiohttp.ClientWebSocketResponse,
+        ping: _PingTracker,
+    ) -> None:
         while True:
             await self._sleep(_KEEP_ALIVE_SECONDS)
+            ping.start()
             self._async_connection_changed(True, False)
             await websocket.send_bytes(encode_pingreq())
+            await self._wait_for_pingresp(ping)
+
+    async def _wait_for_pingresp(self, ping: _PingTracker) -> None:
+        """Fail the session when an outstanding PINGREQ misses its fixed deadline."""
+        response_task = asyncio.create_task(_await_event(ping.response))
+        deadline_task = asyncio.create_task(_await_sleep(self._sleep, _PINGRESP_TIMEOUT_SECONDS))
+        try:
+            done, _ = await asyncio.wait(
+                {response_task, deadline_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if response_task in done:
+                return
+            ping.cancel()
+            raise AupuProtocolError
+        finally:
+            for task in (response_task, deadline_task):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(response_task, deadline_task, return_exceptions=True)
 
     async def _receive_loop(
         self,
         websocket: aiohttp.ClientWebSocketResponse,
         decoder: MqttPacketDecoder,
         pending: deque[MqttPacket],
+        ping: _PingTracker,
     ) -> None:
         while True:
             packet = await _receive_packet(websocket, decoder, pending)
             if packet.packet_type is PacketType.PINGRESP:
+                if not ping.complete():
+                    raise AupuProtocolError
                 self._async_connection_changed(True, True)
                 continue
             if packet.packet_type is not PacketType.PUBLISH or packet.topic is None:
@@ -253,6 +285,39 @@ async def _receive_packet(
             raise AupuProtocolError
         pending.extend(decoder.feed(message.data))
     return pending.popleft()
+
+
+class _PingTracker:
+    """Track the sole outstanding MQTT PINGREQ without retaining peer data."""
+
+    def __init__(self) -> None:
+        self.response = asyncio.Event()
+        self.outstanding = False
+
+    def start(self) -> None:
+        self.response.clear()
+        self.outstanding = True
+
+    def complete(self) -> bool:
+        if not self.outstanding:
+            return False
+        self.outstanding = False
+        self.response.set()
+        return True
+
+    def cancel(self) -> None:
+        self.outstanding = False
+        self.response.clear()
+
+
+async def _await_event(event: asyncio.Event) -> None:
+    """Wait for an event while giving session task races one uniform result type."""
+    await event.wait()
+
+
+async def _await_sleep(sleep: Callable[[float], Awaitable[None]], delay: float) -> None:
+    """Await an injected sleep as a concrete coroutine owned by this session."""
+    await sleep(delay)
 
 
 def _unix_milliseconds() -> int:
