@@ -597,6 +597,31 @@ def test_options_valid_token_and_phone_update_atomically(
     assert hass.config_entries.reload_calls == 1
 
 
+def test_https_only_options_preserve_sms_login_user_uuid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch an HTTPS-only options save deleting the SMS-authenticated identity."""
+    old_data = {**persisted_data(), "user_uuid": "synthetic-sms-user-uuid"}
+    entry = FakeEntry(data=dict(old_data))
+    flow, hass = prepare_options_flow(entry)
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.async_get_clientsession",
+        lambda _: object(),
+    )
+
+    result = _run(
+        flow.async_step_init(
+            {"token": "", "phone": "13800000000", "use_wss": False}
+        )
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.data == {**old_data, "phone": "13800000000"}
+    assert entry.data["user_uuid"] == "synthetic-sms-user-uuid"
+    assert hass.config_entries.update_calls == 1
+    assert hass.config_entries.reload_calls == 1
+
+
 def test_loaded_options_update_reloads_runtime_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -949,7 +974,7 @@ def test_sms_reauth_expires_code_locally_without_attempting_login(
             login_calls += 1
             raise AssertionError("expired code must not reach login")
 
-    monotonic_values = iter((100.0, 401.0))
+    monotonic_values = iter((100.0, 400.0))
     monkeypatch.setattr("custom_components.aupu_q360.config_flow.AupuApiClient", FakeApiClient)
     monkeypatch.setattr(
         "custom_components.aupu_q360.config_flow.async_get_clientsession", lambda _: object()

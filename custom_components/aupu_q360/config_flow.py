@@ -392,7 +392,7 @@ class AupuConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_show_form(
                 step_id="reauth_sms_code", data_schema=_reauth_sms_code_schema()
             )
-        if monotonic() - self._sms_sent_at > _SMS_CODE_TTL_SECONDS:
+        if monotonic() - self._sms_sent_at >= _SMS_CODE_TTL_SECONDS:
             return self.async_show_form(
                 step_id="reauth_sms_code",
                 data_schema=_reauth_sms_code_schema(),
@@ -514,7 +514,7 @@ class AupuOptionsFlow(config_entries.OptionsFlow):
                     _CONF_TOKEN: token,
                     _CONF_PHONE: phone,
                     _CONF_USE_WSS: use_wss,
-                    _CONF_USER_UUID: current.user_uuid if use_wss else None,
+                    _CONF_USER_UUID: current.user_uuid,
                 },
                 require_user_uuid=False,
             )
