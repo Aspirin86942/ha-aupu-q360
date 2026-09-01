@@ -41,3 +41,7 @@ Thumbs.db
 # Home Assistant local runtime
 config/
 deps/
+
+# Isolated implementation and SDD recovery workspaces
+.worktrees/
+.superpowers/
