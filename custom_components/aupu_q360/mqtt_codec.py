@@ -106,6 +106,7 @@ def encode_publish(topic: str, payload: bytes) -> bytes:
     """Encode a QoS 0 PUBLISH packet for a Shadow request or update."""
     if not isinstance(payload, bytes):
         raise AupuProtocolError
+    _validate_publish_topic_name(topic)
     body = _encode_utf8(topic) + payload
     return b"\x30" + encode_remaining_length(len(body)) + body
 
@@ -178,7 +179,7 @@ def _validate_flags(packet_type: PacketType, flags: int) -> None:
             raise AupuProtocolError
         return
     if packet_type is PacketType.PUBLISH:
-        if flags & 0x06:
+        if flags & 0x0E:
             raise AupuProtocolError
         return
     if flags:
@@ -219,6 +220,7 @@ def _decode_connack(flags: int, body: bytes) -> MqttPacket:
 def _decode_publish(flags: int, body: bytes) -> MqttPacket:
     """Decode a QoS 0 PUBLISH topic and opaque application payload."""
     topic, payload_start = _decode_utf8(body, 0)
+    _validate_publish_topic_name(topic)
     return MqttPacket(
         packet_type=PacketType.PUBLISH,
         flags=flags,
@@ -272,6 +274,12 @@ def _decode_packet_identifier(body: bytes) -> int:
     return value
 
 
+def _validate_publish_topic_name(value: str) -> None:
+    """Require a non-empty, non-wildcard MQTT PUBLISH Topic Name."""
+    if not _is_valid_mqtt_utf8(value) or not value or "+" in value or "#" in value:
+        raise AupuProtocolError
+
+
 def _encode_utf8(value: str) -> bytes:
     """Encode one MQTT UTF-8 string after validating all required code points."""
     if not isinstance(value, str) or not _is_valid_mqtt_utf8(value):
@@ -303,10 +311,12 @@ def _decode_utf8(body: bytes, start: int) -> tuple[str, int]:
 
 
 def _is_valid_mqtt_utf8(value: str) -> bool:
-    """Reject NUL, surrogates, and Unicode noncharacters forbidden by MQTT."""
+    """Reject MQTT-forbidden controls, surrogates, and Unicode noncharacters."""
     for character in value:
         code_point = ord(character)
-        if code_point == 0 or 0xD800 <= code_point <= 0xDFFF:
+        if code_point == 0 or 0x01 <= code_point <= 0x1F or 0x7F <= code_point <= 0x9F:
+            return False
+        if 0xD800 <= code_point <= 0xDFFF:
             return False
         if 0xFDD0 <= code_point <= 0xFDEF or code_point & 0xFFFF in (0xFFFE, 0xFFFF):
             return False

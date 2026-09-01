@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, NoReturn
 
 from .errors import AupuProtocolError
 from .models import DeviceConfig
@@ -29,8 +29,8 @@ def parse_shadow_update(
     if not isinstance(payload, bytes):
         raise AupuProtocolError
     try:
-        document = json.loads(payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
+        document = json.loads(payload.decode("utf-8"), parse_constant=_reject_json_constant)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
         raise AupuProtocolError from None
     if not isinstance(document, dict):
         raise AupuProtocolError
@@ -61,6 +61,11 @@ def _target_topic_kind(device: DeviceConfig, topic: str) -> Literal["get", "upda
     if topic == prefix + "update/accepted":
         return "update"
     return None
+
+
+def _reject_json_constant(_: str) -> NoReturn:
+    """Reject JSON extensions such as NaN and Infinity at the parser boundary."""
+    raise ValueError
 
 
 def _extract_light_value(state: dict[str, Any], section: str, did: str) -> bool | None:

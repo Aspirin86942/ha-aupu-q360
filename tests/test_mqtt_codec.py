@@ -41,6 +41,57 @@ def test_qos_zero_publish_is_exact_mqtt_311_bytes() -> None:
     assert encode_publish("a/b", b'{"on":true}') == b'\x30\x10\x00\x03a/b{"on":true}'
 
 
+@pytest.mark.parametrize(
+    "topic",
+    ["", "+", "#", "a/+", "a/#"],
+)
+def test_publish_encoder_rejects_invalid_topic_names(topic: str) -> None:
+    """Catch encoder acceptance of an empty or wildcard PUBLISH Topic Name."""
+    with pytest.raises(AupuProtocolError):
+        encode_publish(topic, b"")
+
+
+@pytest.mark.parametrize(
+    "packet",
+    [
+        b"\x30\x02\x00\x00",  # Empty Topic Name.
+        b"\x30\x03\x00\x01+",  # Wildcard Topic Name.
+        b"\x30\x05\x00\x03a/#",  # Wildcard Topic Name.
+    ],
+)
+def test_publish_decoder_rejects_invalid_topic_names(packet: bytes) -> None:
+    """Catch decoder acceptance of an empty or wildcard PUBLISH Topic Name."""
+    with pytest.raises(AupuProtocolError):
+        decode_packets(packet)
+
+
+def test_publish_decoder_rejects_qos_zero_with_dup_flag() -> None:
+    """Catch MQTT-invalid DUP on a QoS 0 PUBLISH packet."""
+    with pytest.raises(AupuProtocolError):
+        decode_packets(b"\x38\x03\x00\x01a")
+
+
+@pytest.mark.parametrize("control", ["\x01", "\x1f", "\x7f", "\x9f"])
+def test_mqtt_utf8_encoder_rejects_forbidden_control_characters(control: str) -> None:
+    """Catch outgoing client ids retaining MQTT-forbidden control code points."""
+    with pytest.raises(AupuProtocolError):
+        encode_connect("client" + control)
+
+
+@pytest.mark.parametrize("control", ["\x01", "\x1f", "\x7f", "\x9f"])
+def test_mqtt_utf8_decoder_rejects_forbidden_control_characters(control: str) -> None:
+    """Catch decoded PUBLISH Topic Names retaining forbidden control code points."""
+    encoded = control.encode("utf-8")
+    packet = (
+        b"\x30"
+        + bytes((2 + len(encoded),))
+        + len(encoded).to_bytes(2, "big")
+        + encoded
+    )
+    with pytest.raises(AupuProtocolError):
+        decode_packets(packet)
+
+
 def test_ping_packets_are_exact_mqtt_311_bytes() -> None:
     """Catch a heartbeat packet whose required fixed bytes are changed."""
     assert encode_pingreq() == b"\xC0\x00"

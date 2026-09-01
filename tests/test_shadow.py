@@ -94,3 +94,19 @@ def test_invalid_target_shadow_payload_raises_fixed_protocol_error(payload: byte
 
     assert str(raised.value) == "Service response is invalid"
     assert repr(payload) not in str(raised.value)
+
+
+@pytest.mark.parametrize("constant", [b"NaN", b"Infinity", b"-Infinity"])
+def test_non_standard_json_constants_raise_fixed_protocol_error(constant: bytes) -> None:
+    """Catch JSON parser acceptance of non-standard constants outside target state."""
+    payload = (
+        b'{"extra":'
+        + constant
+        + b',"state":{"reported":{"123":{"2":{"properties":{"1":true}}}}}}'
+    )
+
+    with pytest.raises(AupuProtocolError) as raised:
+        parse_shadow_update(DEVICE, UPDATE_ACCEPTED, payload)
+
+    assert str(raised.value) == "Service response is invalid"
+    assert repr(payload) not in str(raised.value)
