@@ -1,0 +1,43 @@
+# Local credentials and reverse-engineering material
+.private/
+local-evidence/
+
+# Captures, certificates, and logs must never enter Git
+*.har
+*.saz
+*.pcap
+*.pcapng
+*.pem
+*.cer
+*.crt
+*.p12
+*.pfx
+*.key
+*.log
+
+# Local configuration and secrets
+.env
+.env.*
+secrets.yaml
+signer_secrets.json
+
+# Python and test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Home Assistant local runtime
+config/
+deps/
