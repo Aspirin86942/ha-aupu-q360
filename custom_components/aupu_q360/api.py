@@ -77,11 +77,17 @@ class AupuApiClient:
                 f"{AUPU_BASE_URL}{path}",
                 headers=headers,
                 json=dict(json),
+                allow_redirects=False,
             ) as response:
                 _raise_for_http_status(response.status)
                 try:
                     payload = await response.json()
-                except (aiohttp.ContentTypeError, TypeError, ValueError):
+                except (
+                    aiohttp.ClientPayloadError,
+                    aiohttp.ContentTypeError,
+                    TypeError,
+                    ValueError,
+                ):
                     raise AupuProtocolError() from None
         except (TimeoutError, aiohttp.ClientConnectionError):
             raise AupuTemporaryError() from None

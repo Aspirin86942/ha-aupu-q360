@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import traceback
 from collections.abc import Coroutine, Generator
 from typing import Any, Self, cast
 
@@ -169,8 +170,24 @@ def test_control_uses_fresh_signature_bearer_and_fixed_post_contract(
         {"App-Authorization": "dynamic-1", "Authorization": credential.authorization_header},
         {"App-Authorization": "dynamic-2", "Authorization": credential.authorization_header},
     ]
+    assert [call["allow_redirects"] for call in session.calls] == [False, False]
     assert session.calls[0]["json"] == build_light_control_body(device, is_on=True)
     assert session.calls[1]["json"] == build_light_control_body(device, is_on=False)
+
+
+@pytest.mark.parametrize("redirect_status", [301, 302, 307, 308])
+def test_redirect_is_protocol_error_without_following_or_replay(
+    device: DeviceConfig,
+    credential: BearerCredential,
+    redirect_status: int,
+) -> None:
+    session = _Session([_Response(redirect_status)])
+
+    with pytest.raises(AupuProtocolError, match="Service response is invalid"):
+        _run(_client(session, _Signer(), credential, device).set_light(True))
+
+    assert len(session.calls) == 1
+    assert session.calls[0]["allow_redirects"] is False
 
 
 @pytest.mark.parametrize(
@@ -233,6 +250,23 @@ def test_invalid_json_is_protocol_error_without_replay(
     with pytest.raises(AupuProtocolError, match="Service response is invalid"):
         _run(_client(session, _Signer(), credential, device).set_light(True))
 
+    assert len(session.calls) == 1
+
+
+def test_damaged_payload_is_redacted_protocol_error_without_replay(
+    device: DeviceConfig, credential: BearerCredential
+) -> None:
+    session = _Session(
+        [_Response(200, json_error=aiohttp.ClientPayloadError("private compressed payload"))]
+    )
+
+    with pytest.raises(AupuProtocolError, match="Service response is invalid") as exc_info:
+        _run(_client(session, _Signer(), credential, device).set_light(True))
+
+    rendered_exception = "".join(traceback.format_exception(exc_info.value))
+    assert "private compressed payload" not in rendered_exception
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__suppress_context__ is True
     assert len(session.calls) == 1
 
 
