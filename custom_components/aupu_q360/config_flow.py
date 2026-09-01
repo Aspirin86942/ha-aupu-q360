@@ -154,7 +154,7 @@ async def _async_verify_terminal_info(
         credential=candidate.credential,
         device=candidate.device,
     )
-    response = await api.request("POST", _TERMINAL_INFO_PATH, json={})
+    response = await api.request("GET", _TERMINAL_INFO_PATH, json={})
     result = response.result
     if not isinstance(result, Mapping):
         raise AupuProtocolError()

@@ -6,9 +6,10 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import time
-from collections.abc import Coroutine, Generator, Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Coroutine, Generator, Mapping
+from dataclasses import dataclass, field
 from typing import Any, cast
 
 import pytest
@@ -23,7 +24,7 @@ from custom_components.aupu_q360.config_flow import (
     AupuOptionsFlow,
 )
 from custom_components.aupu_q360.const import DOMAIN
-from custom_components.aupu_q360.models import AupuRuntimeData
+from custom_components.aupu_q360.models import ApiResponse, AupuRuntimeData
 from custom_components.aupu_q360.signer import AppAuthorizationSigner
 
 SYNTHETIC_SIGNER = {
@@ -93,6 +94,37 @@ class FakeEntry:
     entry_id: str = "synthetic-entry"
     domain: str = DOMAIN
     runtime_data: AupuRuntimeData | None = None
+    update_listeners: list[Callable[[HomeAssistant, ConfigEntry[Any]], Coroutine[Any, Any, None]]] = field(
+        default_factory=list
+    )
+    unload_callbacks: list[Callable[[], Coroutine[Any, Any, None] | None]] = field(
+        default_factory=list
+    )
+
+    def add_update_listener(
+        self,
+        listener: Callable[[HomeAssistant, ConfigEntry[Any]], Coroutine[Any, Any, None]],
+    ) -> Callable[[], None]:
+        """Register the same listener boundary used by a real ConfigEntry."""
+        self.update_listeners.append(listener)
+
+        def unsubscribe() -> None:
+            self.update_listeners.remove(listener)
+
+        return unsubscribe
+
+    def async_on_unload(
+        self, callback: Callable[[], Coroutine[Any, Any, None] | None]
+    ) -> None:
+        """Keep listener cleanup until the fake manager completes unload."""
+        self.unload_callbacks.append(callback)
+
+    async def async_process_on_unload(self) -> None:
+        """Mirror HA's LIFO unload callback processing for listener cleanup."""
+        while self.unload_callbacks:
+            result = self.unload_callbacks.pop()()
+            if result is not None:
+                await result
 
 
 class FakeFlowManager:
@@ -117,9 +149,14 @@ class FakeConfigEntries:
 
     def __init__(self, entry: FakeEntry | None = None) -> None:
         self.entry = entry
+        self.hass: HomeAssistant | None = None
         self.flow = FakeFlowManager()
         self.update_calls = 0
+        self.reload_calls = 0
+        self.listener_tasks: list[asyncio.Task[None]] = []
         self.forwarded: tuple[Platform, ...] | None = None
+        self.forward_error: BaseException | None = None
+        self.forward_stoppers: list[Any] = []
         self.unloaded: tuple[Platform, ...] | None = None
         self.unload_result = True
 
@@ -154,15 +191,44 @@ class FakeConfigEntries:
         **kwargs: Any,
     ) -> bool:
         del kwargs
+        if entry.data == data:
+            return False
         self.update_calls += 1
-        cast(FakeEntry, entry).data = dict(data)
+        fake_entry = cast(FakeEntry, entry)
+        fake_entry.data = dict(data)
+        assert self.hass is not None
+        for listener in fake_entry.update_listeners:
+            self.listener_tasks.append(
+                asyncio.create_task(listener(self.hass, entry))
+            )
         return True
+
+    async def async_wait_for_update_listeners(self) -> None:
+        """Wait for all listener work scheduled by an entry update."""
+        if self.listener_tasks:
+            await asyncio.gather(*self.listener_tasks)
+            self.listener_tasks.clear()
+
+    async def async_reload(self, entry_id: str) -> bool:
+        """Mirror the integration-owned effects of one HA reload."""
+        assert self.entry is not None and self.entry.entry_id == entry_id
+        assert self.hass is not None
+        self.reload_calls += 1
+        entry = cast(ConfigEntry[AupuRuntimeData], self.entry)
+        if not await async_unload_entry(self.hass, entry):
+            return False
+        await self.entry.async_process_on_unload()
+        return await async_setup_entry(self.hass, entry)
 
     async def async_forward_entry_setups(
         self, entry: ConfigEntry[Any], platforms: tuple[Platform, ...]
     ) -> None:
-        del entry
         self.forwarded = platforms
+        runtime = cast(FakeEntry, entry).runtime_data
+        assert runtime is not None
+        runtime.stoppers.extend(self.forward_stoppers)
+        if self.forward_error is not None:
+            raise self.forward_error
 
     async def async_unload_platforms(
         self, entry: ConfigEntry[Any], platforms: tuple[Platform, ...]
@@ -177,6 +243,9 @@ class FakeHass:
     """Minimal Home Assistant boundary for direct flow-step calls."""
 
     config_entries: FakeConfigEntries
+
+    def __post_init__(self) -> None:
+        self.config_entries.hass = cast(HomeAssistant, self)
 
 
 def prepare_config_flow(entry: FakeEntry | None = None) -> tuple[AupuConfigFlow, FakeHass]:
@@ -292,18 +361,39 @@ def test_duplicate_device_aborts_by_hashed_unique_id() -> None:
 def test_wss_requires_confirmation_then_verifies_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Catch WSS verification before consent or multiple read-only requests."""
-    calls = 0
+    """Catch wrong terminal-info method/path or verification before consent."""
+    session_sentinel = object()
+    requests: list[tuple[str, str, Mapping[str, Any]]] = []
 
-    async def verifier(*args: object, **kwargs: object) -> str:
-        nonlocal calls
-        del args, kwargs
-        calls += 1
-        return "synthetic-user-uuid"
+    class FakeApiClient:
+        """Replace only the external client while running the real verifier."""
+
+        def __init__(self, *, session: object, **kwargs: object) -> None:
+            del kwargs
+            assert session is session_sentinel
+
+        async def request(
+            self, method: str, path: str, *, json: Mapping[str, Any]
+        ) -> ApiResponse:
+            requests.append((method, path, json))
+            return ApiResponse(
+                status=0,
+                result={
+                    "content": {
+                        "userUuid": "synthetic-user-uuid",
+                        "ignored": "not-persisted",
+                    },
+                    "ignored": "not-persisted",
+                },
+                timestamp=1,
+            )
 
     monkeypatch.setattr(
-        "custom_components.aupu_q360.config_flow._async_verify_terminal_info",
-        verifier,
+        "custom_components.aupu_q360.config_flow.async_get_clientsession",
+        lambda _: session_sentinel,
+    )
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.config_flow.AupuApiClient", FakeApiClient
     )
     flow, _ = prepare_config_flow()
 
@@ -311,30 +401,49 @@ def test_wss_requires_confirmation_then_verifies_once(
 
     assert confirmation["type"] is FlowResultType.FORM
     assert confirmation["step_id"] == "confirm_wss"
-    assert calls == 0
+    assert requests == []
 
     result = _run(flow.async_step_confirm_wss({}))
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"]["use_wss"] is True
     assert result["data"]["user_uuid"] == "synthetic-user-uuid"
-    assert calls == 1
+    assert "not-persisted" not in repr(result["data"])
+    assert requests == [
+        ("GET", "/authserver/auth/user/terminal/info", {})
+    ]
 
 
 def test_wss_verification_failure_does_not_create_partial_entry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Catch failed read-only verification leaking a partially persisted entry."""
+    requests: list[tuple[str, str, Mapping[str, Any]]] = []
 
-    async def verifier(*args: object, **kwargs: object) -> str:
-        del args, kwargs
-        raise ValueError("synthetic protocol failure")
+    class FakeApiClient:
+        """Return a complete response envelope with an unusable user UUID."""
+
+        def __init__(self, **kwargs: object) -> None:
+            del kwargs
+
+        async def request(
+            self, method: str, path: str, *, json: Mapping[str, Any]
+        ) -> ApiResponse:
+            requests.append((method, path, json))
+            return ApiResponse(
+                status=0,
+                result={"content": {"userUuid": ""}},
+                timestamp=1,
+            )
 
     monkeypatch.setattr(
-        "custom_components.aupu_q360.config_flow._async_verify_terminal_info",
-        verifier,
+        "custom_components.aupu_q360.config_flow.async_get_clientsession",
+        lambda _: object(),
     )
-    flow, _ = prepare_config_flow()
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.config_flow.AupuApiClient", FakeApiClient
+    )
+    flow, hass = prepare_config_flow()
     _run(flow.async_step_user(user_input(use_wss=True)))
 
     result = _run(flow.async_step_confirm_wss({}))
@@ -342,6 +451,8 @@ def test_wss_verification_failure_does_not_create_partial_entry(
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "confirm_wss"
     assert result["errors"] == {"base": "cannot_connect"}
+    assert requests == [("GET", "/authserver/auth/user/terminal/info", {})]
+    assert hass.config_entries.update_calls == 0
 
 
 def persisted_data(*, token: str | None = None, use_wss: bool = False) -> dict[str, object]:
@@ -355,11 +466,29 @@ def persisted_data(*, token: str | None = None, use_wss: bool = False) -> dict[s
     }
 
 
-def test_options_invalid_token_keeps_old_data_unchanged() -> None:
-    """Catch validation failures that overwrite the last usable credential."""
+def test_options_invalid_token_keeps_loaded_runtime_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch invalid options writing data, reloading, or replacing loaded runtime."""
     old_data = persisted_data()
     entry = FakeEntry(data=dict(old_data))
-    flow, hass = prepare_options_flow(entry)
+    hass = FakeHass(FakeConfigEntries(entry))
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.async_get_clientsession",
+        lambda _: object(),
+    )
+    _run(
+        async_setup_entry(
+            cast(HomeAssistant, hass), cast(ConfigEntry[AupuRuntimeData], entry)
+        )
+    )
+    old_runtime = entry.runtime_data
+    assert old_runtime is not None
+    flow = AupuOptionsFlow()
+    flow.hass = cast(HomeAssistant, hass)
+    flow.handler = entry.entry_id
+    flow.flow_id = "invalid-loaded-options-flow"
+    flow.context = {"source": "init"}
 
     result = _run(
         flow.async_step_init(
@@ -371,6 +500,8 @@ def test_options_invalid_token_keeps_old_data_unchanged() -> None:
     assert result["errors"] == {"base": "expired_token"}
     assert entry.data == old_data
     assert hass.config_entries.update_calls == 0
+    assert hass.config_entries.reload_calls == 0
+    assert entry.runtime_data is old_runtime
 
 
 def test_options_can_replace_an_expired_stored_token() -> None:
@@ -379,7 +510,9 @@ def test_options_can_replace_an_expired_stored_token() -> None:
     old_data = persisted_data(token=expired)
     entry = FakeEntry(data=dict(old_data))
     flow, hass = prepare_options_flow(entry)
-    replacement = valid_token()
+    replacement = make_synthetic_jwt(
+        {"exp": int(time.time()) + 7 * 24 * 60 * 60, "sub": "replacement"}
+    )
 
     result = _run(
         flow.async_step_init(
@@ -416,6 +549,49 @@ def test_options_valid_token_and_phone_update_atomically() -> None:
         "phone": "13800000000",
     }
     assert hass.config_entries.update_calls == 1
+
+
+def test_loaded_options_update_reloads_runtime_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch entry updates leaving the loaded runtime on the old credential."""
+    entry = FakeEntry(data=persisted_data())
+    hass = FakeHass(FakeConfigEntries(entry))
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.async_get_clientsession",
+        lambda _: object(),
+    )
+    _run(
+        async_setup_entry(
+            cast(HomeAssistant, hass), cast(ConfigEntry[AupuRuntimeData], entry)
+        )
+    )
+    old_runtime = entry.runtime_data
+    assert old_runtime is not None
+    replacement = make_synthetic_jwt(
+        {"exp": int(time.time()) + 7 * 24 * 60 * 60, "sub": "runtime-replacement"}
+    )
+    flow = AupuOptionsFlow()
+    flow.hass = cast(HomeAssistant, hass)
+    flow.handler = entry.entry_id
+    flow.flow_id = "loaded-options-flow"
+    flow.context = {"source": "init"}
+
+    result = _run(
+        flow.async_step_init(
+            {"token": replacement, "phone": "", "use_wss": False}
+        )
+    )
+    _run(hass.config_entries.async_wait_for_update_listeners())
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert hass.config_entries.update_calls == 1
+    assert hass.config_entries.reload_calls == 1
+    assert entry.runtime_data is not None
+    assert entry.runtime_data is not old_runtime
+    assert entry.runtime_data.credential.authorization_header == f"Bearer {replacement}"
+    assert len(entry.update_listeners) == 1
+    assert len(entry.unload_callbacks) == 1
 
 
 def test_options_enabling_wss_waits_for_confirmation(
@@ -486,11 +662,54 @@ def test_setup_builds_runtime_and_forwards_light_without_network(
 class Stopper:
     """Record one safe asynchronous runtime stop."""
 
-    def __init__(self) -> None:
+    def __init__(self, failure: BaseException | None = None) -> None:
         self.calls = 0
+        self.failure = failure
 
     async def async_stop(self) -> None:
         self.calls += 1
+        if self.failure is not None:
+            raise self.failure
+
+
+def test_forward_failure_stops_all_unique_stoppers_and_preserves_primary_error(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Catch setup failures leaking tasks or cleanup masking the forward error."""
+    entry = FakeEntry(data=persisted_data())
+    hass = FakeHass(FakeConfigEntries(entry))
+    primary_error = RuntimeError("synthetic forward failure")
+    failing_stopper = Stopper(RuntimeError("private stopper detail"))
+    remaining_stopper = Stopper()
+    hass.config_entries.forward_stoppers = [
+        failing_stopper,
+        failing_stopper,
+        remaining_stopper,
+    ]
+    hass.config_entries.forward_error = primary_error
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.async_get_clientsession",
+        lambda _: object(),
+    )
+
+    with (
+        caplog.at_level(logging.ERROR, logger="custom_components.aupu_q360"),
+        pytest.raises(RuntimeError, match="synthetic forward failure") as raised,
+    ):
+        _run(
+            async_setup_entry(
+                cast(HomeAssistant, hass),
+                cast(ConfigEntry[AupuRuntimeData], entry),
+            )
+        )
+
+    assert raised.value is primary_error
+    assert failing_stopper.calls == 1
+    assert remaining_stopper.calls == 1
+    assert "runtime_data" not in entry.__dict__
+    assert "AUPU runtime teardown failed" in caplog.text
+    assert "private stopper detail" not in caplog.text
 
 
 def test_successful_unload_stops_runtime_and_clears_reference(
@@ -522,6 +741,9 @@ def test_successful_unload_stops_runtime_and_clears_reference(
     assert stopper.calls == 1
     assert hass.config_entries.unloaded == (Platform.LIGHT,)
     assert "runtime_data" not in entry.__dict__
+    _run(entry.async_process_on_unload())
+    assert entry.update_listeners == []
+    assert entry.unload_callbacks == []
 
 
 def test_failed_platform_unload_keeps_runtime_running(

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
@@ -12,6 +14,36 @@ from .models import AupuConfigEntryData, AupuRuntimeData
 from .signer import AppAuthorizationSigner
 
 _PLATFORMS = (Platform.LIGHT,)
+_LOGGER = logging.getLogger(__name__)
+
+
+async def _async_reload_entry(
+    hass: HomeAssistant, entry: ConfigEntry[AupuRuntimeData]
+) -> None:
+    """Rebuild runtime objects after Config Entry data changes."""
+    await hass.config_entries.async_reload(entry.entry_id)
+
+
+async def _async_teardown_runtime(entry: ConfigEntry[AupuRuntimeData]) -> None:
+    """Stop each runtime object once and clear the entry reference."""
+    if not hasattr(entry, "runtime_data"):
+        return
+    teardown_failed = False
+    seen: set[int] = set()
+    try:
+        for stopper in tuple(entry.runtime_data.stoppers):
+            identity = id(stopper)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            try:
+                await stopper.async_stop()
+            except Exception:  # noqa: BLE001 - continue independent runtime cleanup
+                teardown_failed = True
+    finally:
+        del entry.runtime_data
+    if teardown_failed:
+        _LOGGER.error("AUPU runtime teardown failed")
 
 
 async def async_setup_entry(
@@ -36,8 +68,9 @@ async def async_setup_entry(
     try:
         await hass.config_entries.async_forward_entry_setups(entry, _PLATFORMS)
     except BaseException:
-        del entry.runtime_data
+        await _async_teardown_runtime(entry)
         raise
+    entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
     return True
 
 
@@ -47,13 +80,5 @@ async def async_unload_entry(
     """Unload entities, then stop and release runtime-owned background work."""
     if not await hass.config_entries.async_unload_platforms(entry, _PLATFORMS):
         return False
-    if hasattr(entry, "runtime_data"):
-        seen: set[int] = set()
-        for stopper in tuple(entry.runtime_data.stoppers):
-            identity = id(stopper)
-            if identity in seen:
-                continue
-            seen.add(identity)
-            await stopper.async_stop()
-        del entry.runtime_data
+    await _async_teardown_runtime(entry)
     return True
