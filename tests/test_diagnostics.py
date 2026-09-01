@@ -353,6 +353,61 @@ def test_secret_scanner_detects_unquoted_high_value_assignment(
     assert matching_line.decode() not in output.out
 
 
+@pytest.mark.parametrize(
+    ("assignment_key", "value_label"),
+    (
+        (b"secret", b"Secret"),
+        (b"signature", b"Signature"),
+        (b"jwt", b"Jwt"),
+    ),
+    ids=("secret", "signature", "jwt"),
+)
+def test_secret_scanner_detects_unquoted_yaml_high_value_assignments(
+    git_repository: Any,
+    capsys: pytest.CaptureFixture[str],
+    assignment_key: bytes,
+    value_label: bytes,
+) -> None:
+    """Catch YAML high-value assignments without disclosing values or source lines."""
+    sentinel = b"Synthetic" + value_label + b"Value0123456789"
+    matching_line = assignment_key + b": " + sentinel + b"  # safe comment"
+    _track(git_repository, "config.yml", matching_line)
+
+    result = check_no_secrets.run(git_repository, None, None)
+    output = capsys.readouterr()
+
+    assert result == 1
+    assert output.err == ""
+    assert "hit_type=assignment" in output.out
+    assert sentinel.decode() not in output.out
+    assert matching_line.decode() not in output.out
+
+
+def test_secret_scanner_ignores_yaml_type_annotations_short_values_and_trailing_prose(
+    git_repository: Any,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Keep YAML assignment matching bounded to high-value line-ending values."""
+    high_looking_value = b"Synthetic" + b"HighLooking" + b"Value0123456789"
+    content = b"\n".join(
+        (
+            b"secret: public",
+            b"signature: str",
+            b"jwt: HS256",
+            b"secret: " + high_looking_value + b" trailing prose",
+        )
+    )
+    _track(git_repository, "public.yml", content)
+
+    result = check_no_secrets.run(git_repository, None, None)
+    output = capsys.readouterr()
+
+    assert result == 0
+    assert output.err == ""
+    assert "sensitive_hit_count=0" in output.out
+    assert high_looking_value.decode() not in output.out
+
+
 def test_secret_scanner_detects_encrypted_private_key_header_without_echoing_it(
     git_repository: Any,
     capsys: pytest.CaptureFixture[str],
@@ -465,6 +520,84 @@ def _write_har_captures(capture_root: Any, request: dict[str, object]) -> None:
             json.dumps({"log": {"entries": [{"request": request}]}}),
             encoding="utf-8",
         )
+
+
+@pytest.mark.parametrize(
+    "serialization",
+    ("json_document", "url_query", "form_body"),
+)
+def test_low_information_private_candidate_matches_each_exact_document_context(
+    git_repository: Any,
+    tmp_path: Any,
+    capsys: pytest.CaptureFixture[str],
+    serialization: str,
+) -> None:
+    """Match low-information candidates only in exact structured contexts."""
+    field_name = "deviceIdentifier"
+    candidate = "SyntheticLowDevice/" + serialization
+    capture_root = tmp_path / "low-candidate-captures"
+    _write_har_captures(
+        capture_root,
+        {
+            "url": "https://example.invalid/path",
+            "postData": {
+                "params": [{"name": field_name, "value": candidate}],
+            },
+        },
+    )
+    encoded_candidate = quote(candidate, safe="")
+    serialized = {
+        "json_document": json.dumps({field_name: candidate}).encode(),
+        "url_query": (
+            f"https://example.invalid/path?{field_name}={encoded_candidate}"
+        ).encode(),
+        "form_body": f"{field_name}={encoded_candidate}&public=value".encode(),
+    }[serialization]
+    _track(git_repository, "controlled-context.txt", serialized)
+
+    result = check_no_secrets.run(git_repository, None, capture_root)
+    output = capsys.readouterr()
+
+    assert result == 1
+    assert output.err == ""
+    assert "private_sources=available" in output.out
+    assert "hit_type=exact_private_value" in output.out
+    assert candidate not in output.out
+    assert serialized.decode() not in output.out
+
+
+def test_low_information_form_requires_exact_parameter_name_and_value(
+    git_repository: Any,
+    tmp_path: Any,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Reject form parameters whose full name or decoded value differs."""
+    field_name = "deviceIdentifier"
+    candidate = "SyntheticLowDevice/Exactness"
+    capture_root = tmp_path / "low-candidate-captures"
+    _write_har_captures(
+        capture_root,
+        {
+            "url": "https://example.invalid/path",
+            "postData": {
+                "params": [{"name": field_name, "value": candidate}],
+            },
+        },
+    )
+    encoded_candidate = quote(candidate, safe="")
+    mismatches = (
+        f"other{field_name}={encoded_candidate}"
+        f"&{field_name}={encoded_candidate}Suffix"
+    ).encode()
+    _track(git_repository, "public-form.txt", mismatches)
+
+    result = check_no_secrets.run(git_repository, None, capture_root)
+    output = capsys.readouterr()
+
+    assert result == 0
+    assert output.err == ""
+    assert "sensitive_hit_count=0" in output.out
+    assert candidate not in output.out
 
 
 def test_har_candidate_extraction_is_schema_aware_for_sensitive_value_aliases(

@@ -68,8 +68,10 @@ _PATTERNS = {
         rb"jwt(?:[_-]?token)?|id[_-]?token|private[_-]?key|"
         rb"token|api[_-]?token|access[_-]?token|refresh[_-]?token|"
         rb"auth[_-]?token|cookie|password)\b(?:"
-        rb"[ \t\"']*:[ \t]*[\"']"
+        rb"[ \t\"']*:[ \t]*(?:[\"']"
         rb"(?P<assignment_colon>[A-Za-z0-9._~+/=-]{20,})[\"']|"
+        rb"(?P<assignment_yaml_unquoted>[A-Za-z0-9._~+/=-]{20,})"
+        rb"(?=[ \t]*(?:#[^\r\n]*)?\r?$))|"
         rb"[ \t]*=[ \t]*(?:[\"']"
         rb"(?P<assignment_quoted>[A-Za-z0-9._~+/=-]{20,})[\"']|"
         rb"(?P<assignment_unquoted>[A-Za-z0-9._~+/=-]{20,})"
@@ -459,6 +461,7 @@ def _allowed_match(hit_type: str, content: bytes, match: re.Match[bytes]) -> boo
                 value
                 for value in (
                     match.group("assignment_colon"),
+                    match.group("assignment_yaml_unquoted"),
                     match.group("assignment_quoted"),
                     match.group("assignment_unquoted"),
                 )
@@ -493,14 +496,33 @@ def _private_candidate_occurs(candidate: _PrivateCandidate, content: bytes) -> b
     if _json_document_contains_candidate(document, candidate):
         return True
     stripped = decoded.strip()
+    expected_name = _normalized_name(candidate.field_name)
     try:
         query = parse_qsl(urlsplit(stripped).query, keep_blank_values=True)
     except ValueError:
-        return False
-    expected_name = _normalized_name(candidate.field_name)
-    return any(
+        query = []
+    if any(
         _normalized_name(name) == expected_name and value == candidate.value
         for name, value in query
+    ):
+        return True
+
+    if (
+        "=" not in stripped
+        or any(character.isspace() for character in stripped)
+        or any(marker in stripped for marker in ("?", "#"))
+    ):
+        return False
+    segments = stripped.split("&")
+    if any(not segment or not segment.partition("=")[0] for segment in segments):
+        return False
+    try:
+        form = parse_qsl(stripped, keep_blank_values=True, strict_parsing=True)
+    except ValueError:
+        return False
+    return any(
+        _normalized_name(name) == expected_name and value == candidate.value
+        for name, value in form
     )
 
 
