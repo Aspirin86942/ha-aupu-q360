@@ -6,8 +6,11 @@ import asyncio
 import base64
 import json
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
+import aiohttp
 import pytest
 from homeassistant.config_entries import SOURCE_REAUTH, SOURCE_USER, ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -16,7 +19,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.aupu_q360.api import AupuApiClient
+from custom_components.aupu_q360.api import AupuApiClient, WssCredentials
 from custom_components.aupu_q360.const import DOMAIN
 from custom_components.aupu_q360.diagnostics import (
     async_get_config_entry_diagnostics,
@@ -43,6 +46,75 @@ SYNTHETIC_SIGNER = {
     "header_sep_2": "synthetic-separator-two",
     "signature_label": "synthetic-signature-label",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class _FakeMessage:
+    type: aiohttp.WSMsgType
+    data: bytes
+
+
+class _FakeWebSocket:
+    """Provide a complete synthetic MQTT handshake, then block locally."""
+
+    def __init__(self) -> None:
+        self.sent: list[bytes] = []
+        self.messages: asyncio.Queue[_FakeMessage] = asyncio.Queue()
+        self.receive_started = asyncio.Event()
+        self.close_calls = 0
+        for packet in (
+            b"\x20\x02\x00\x00",
+            b"\x90\x03\x00\x01\x00",
+            b"\x90\x03\x00\x02\x00",
+        ):
+            self.messages.put_nowait(_FakeMessage(aiohttp.WSMsgType.BINARY, packet))
+
+    async def send_bytes(self, data: bytes) -> None:
+        self.sent.append(data)
+
+    async def receive(self) -> _FakeMessage:
+        self.receive_started.set()
+        return await self.messages.get()
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+class _FakeSession:
+    """Keep the real WSS client on an in-memory aiohttp boundary."""
+
+    def __init__(self, websocket: _FakeWebSocket) -> None:
+        self.websocket = websocket
+        self.calls: list[tuple[str, dict[str, str], tuple[str, ...]]] = []
+
+    async def ws_connect(
+        self,
+        url: str,
+        *,
+        params: dict[str, str],
+        protocols: tuple[str, ...],
+    ) -> _FakeWebSocket:
+        self.calls.append((url, dict(params), protocols))
+        return self.websocket
+
+
+class _ControlledSleep:
+    """Record WSS waits while keeping each real task locally cancellable."""
+
+    def __init__(self) -> None:
+        self.delays: list[float] = []
+
+    async def __call__(self, delay: float) -> None:
+        self.delays.append(delay)
+        await asyncio.Event().wait()
+
+
+async def _wait_until(predicate: Callable[[], bool]) -> None:
+    for _ in range(200):
+        if predicate():
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("condition was not reached")
 
 
 def _jwt(*, expires_in: int, subject: str) -> str:
@@ -190,7 +262,9 @@ async def test_real_entry_manager_exposes_one_light_service_and_diagnostics(
         blocking=True,
     )
     assert calls == [True]
-    assert hass.states[entity_id].state == "on"
+    state = hass.states.get(entity_id)
+    assert state is not None
+    assert state.state == "on"
 
     diagnostics = await async_get_config_entry_diagnostics(hass, entry)
     assert set(diagnostics) == {
@@ -243,17 +317,33 @@ async def test_real_entry_manager_starts_and_stops_fake_wss_without_task_leak(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Catch real setup/unload losing ownership of the optional WSS lifecycle."""
-    starts: list[AupuShadowWebSocket] = []
-    stops: list[AupuShadowWebSocket] = []
+    websocket = _FakeWebSocket()
+    session = _FakeSession(websocket)
+    sleep = _ControlledSleep()
+    original_init = AupuShadowWebSocket.__init__
 
-    async def fake_start(client: AupuShadowWebSocket) -> None:
-        starts.append(client)
+    def init_with_fake_sleep(
+        client: AupuShadowWebSocket,
+        *args: object,
+        **kwargs: object,
+    ) -> None:
+        kwargs["sleep"] = sleep
+        original_init(client, *args, **kwargs)
 
-    async def fake_stop(client: AupuShadowWebSocket) -> None:
-        stops.append(client)
+    async def fake_get_wss_credentials(self: AupuApiClient) -> WssCredentials:
+        del self
+        return WssCredentials(
+            authorizer_name="synthetic-authorizer",
+            signature="synthetic-signature-1",
+            token_key_name="synthetic-token-key",
+        )
 
-    monkeypatch.setattr(AupuShadowWebSocket, "async_start", fake_start)
-    monkeypatch.setattr(AupuShadowWebSocket, "async_stop", fake_stop)
+    monkeypatch.setattr(AupuShadowWebSocket, "__init__", init_with_fake_sleep)
+    monkeypatch.setattr(AupuApiClient, "get_wss_credentials", fake_get_wss_credentials)
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.async_get_clientsession",
+        lambda _: session,
+    )
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="AUPU Q360",
@@ -265,14 +355,23 @@ async def test_real_entry_manager_starts_and_stops_fake_wss_without_task_leak(
         ),
     )
     entry.add_to_hass(hass)
+    current = asyncio.current_task()
+    before = {task for task in asyncio.all_tasks() if task is not current}
 
     assert await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
-    assert len(starts) == 1
-    assert entry.runtime_data.coordinator is not None
+    await websocket.receive_started.wait()
+    await _wait_until(lambda: sleep.delays == [30])
+    running = {
+        task.get_name()
+        for task in asyncio.all_tasks()
+        if task is not current and not task.done() and task.get_name().startswith("aupu_q360_wss")
+    }
+    assert running == {"aupu_q360_wss", "aupu_q360_wss_ping", "aupu_q360_wss_receive"}
+    assert len(session.calls) == 1
 
     await _unload(hass, entry)
-    assert stops == starts
-    assert not any(
-        task.get_name() == "aupu_q360_wss" and not task.done() for task in asyncio.all_tasks()
-    )
+    await asyncio.sleep(0)
+    after = {task for task in asyncio.all_tasks() if task is not current and not task.done()}
+    assert after <= before
+    assert websocket.sent[-1] == b"\xe0\x00"
+    assert websocket.close_calls == 1

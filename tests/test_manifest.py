@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from pathlib import Path
+
+import yaml
 
 DOMAIN = "aupu_q360"
 NAME = "AUPU Q360"
@@ -24,18 +27,18 @@ def _key_tree(value: object) -> object:
     return None
 
 
-def _workflow_jobs(workflow: str) -> dict[str, str]:
-    """Split top-level job blocks without adding a YAML runtime dependency."""
-    jobs_match = re.search(r"(?m)^jobs:\s*$", workflow)
-    assert jobs_match is not None
-    jobs_text = workflow[jobs_match.end() :]
-    matches = list(re.finditer(r"(?m)^  ([a-z][a-z0-9-]*):\s*$", jobs_text))
-    return {
-        match.group(1): jobs_text[
-            match.end() : matches[index + 1].start() if index + 1 < len(matches) else None
-        ]
-        for index, match in enumerate(matches)
-    }
+def _load_yaml(path: Path) -> dict[str, object]:
+    value = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert isinstance(value, dict)
+    return value
+
+
+def _scalar_strings(value: object) -> list[str]:
+    if isinstance(value, Mapping):
+        return [text for nested in value.values() for text in _scalar_strings(nested)]
+    if isinstance(value, list):
+        return [text for nested in value for text in _scalar_strings(nested)]
+    return [value] if isinstance(value, str) else []
 
 
 def test_manifest_is_hacs_installable(project_root: Path) -> None:
@@ -145,23 +148,73 @@ def test_readme_documents_safe_offline_install_and_operations(project_root: Path
     assert not re.search(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b", readme)
     assert not re.search(r"https://github\.com/[^/\s]+/[^/\s]+", readme)
 
+    release_steps = (
+        "发布到真实 GitHub 仓库",
+        "补充真实 `documentation` 与 `issue_tracker`",
+        "运行 HACS 和 hassfest 验证",
+        "在 HACS 中添加真实仓库 URL",
+        "重启 Home Assistant",
+        "添加集成",
+    )
+    positions = [readme.index(step) for step in release_steps]
+    assert positions == sorted(positions)
+
 
 def test_ci_has_exactly_four_minimal_non_publishing_jobs(project_root: Path) -> None:
     """Catch CI losing a validation gate or gaining an artifact publication path."""
-    workflow = (project_root / ".github/workflows/validate.yml").read_text(encoding="utf-8")
-    jobs = _workflow_jobs(workflow)
-
+    workflow = _load_yaml(project_root / ".github/workflows/validate.yml")
+    jobs = workflow["jobs"]
+    assert isinstance(jobs, dict)
     assert set(jobs) == {"offline-quality", "ha-runtime", "hacs", "hassfest"}
-    assert re.search(r"(?m)^permissions:\s*\n  contents: read\s*$", workflow)
-    assert "uv run pytest" in jobs["offline-quality"]
-    assert "uv run ruff check ." in jobs["offline-quality"]
-    assert "uv run ruff format --check ." in jobs["offline-quality"]
-    assert "uv run mypy custom_components/aupu_q360" in jobs["offline-quality"]
-    assert "scripts/check_no_secrets.py" in jobs["offline-quality"]
-    assert "ha-test" in jobs["ha-runtime"]
-    assert "tests/ha_runtime" in jobs["ha-runtime"]
-    assert "hacs/action@main" in jobs["hacs"]
-    assert "home-assistant/actions/hassfest@master" in jobs["hassfest"]
-    assert "upload-artifact" not in workflow
-    assert ".private" not in workflow
-    assert "local-evidence" not in workflow
+    assert workflow["permissions"] == {"contents": "read"}
+
+    assert jobs["offline-quality"] == {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+            {"uses": "actions/checkout@v4"},
+            {
+                "uses": "actions/setup-python@v5",
+                "with": {"python-version": "3.13"},
+            },
+            {"uses": "astral-sh/setup-uv@v6"},
+            {"run": "uv sync --locked"},
+            {"run": "uv run pytest"},
+            {"run": "uv run ruff check ."},
+            {"run": "uv run ruff format --check ."},
+            {"run": "uv run mypy custom_components/aupu_q360"},
+            {"run": "uv run python scripts/check_no_secrets.py"},
+        ],
+    }
+    assert jobs["ha-runtime"] == {
+        "runs-on": "ubuntu-latest",
+        "env": {"AUPU_RUN_HA_RUNTIME": "1"},
+        "steps": [
+            {"uses": "actions/checkout@v4"},
+            {
+                "uses": "actions/setup-python@v5",
+                "with": {"python-version": "3.13"},
+            },
+            {"uses": "astral-sh/setup-uv@v6"},
+            {"run": "uv sync --locked --group ha-test"},
+            {"run": "uv run --group ha-test pytest tests/ha_runtime -m ha_runtime -v"},
+        ],
+    }
+    assert jobs["hacs"] == {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+            {"uses": "actions/checkout@v4"},
+            {"uses": "hacs/action@main", "with": {"category": "integration"}},
+        ],
+    }
+    assert jobs["hassfest"] == {
+        "runs-on": "ubuntu-latest",
+        "steps": [
+            {"uses": "actions/checkout@v4"},
+            {"uses": "home-assistant/actions/hassfest@master"},
+        ],
+    }
+
+    strings = _scalar_strings(workflow)
+    assert not any("upload-artifact" in value for value in strings)
+    assert not any(".private" in value for value in strings)
+    assert not any("local-evidence" in value for value in strings)

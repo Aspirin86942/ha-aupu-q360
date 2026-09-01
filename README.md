@@ -13,15 +13,20 @@ Q360T5-Pro 浴霸照明。云 API 与私有协议可能随厂商更新而失效�
 ## HACS 安装
 
 当前仓库没有已确认的 GitHub 发布地址。发布者先把代码发布到自己真实的 GitHub 仓库，
-再在 HACS 中打开“自定义仓库”，填入“你的真实 GitHub 仓库 URL”，类别选择“集成”。不要把
-示例文字当成 URL，也不要为未创建的仓库编造链接。
+再按以下顺序完成元数据验证和安装。不要把示例文字当成 URL，也不要为未创建的仓库编造
+链接。
 
-1. 在 HACS 中添加上述真实自定义仓库并下载 `AUPU Q360`。
-2. 按 HACS 提示重启 Home Assistant。
-3. 重启后进入“设置 → 设备与服务 → 添加集成”，搜索 `AUPU Q360`。
+1. 发布到真实 GitHub 仓库。
+2. 用该仓库的真实 URL 补充真实 `documentation` 与 `issue_tracker`，并把元数据作为一个
+   单独提交。
+3. 对该提交运行 HACS 和 hassfest 验证，确认通过后再进入安装步骤。
+4. 在 HACS 中添加真实仓库 URL；填写“你的真实 GitHub 仓库 URL”，类别选择“集成”，然后
+   下载 `AUPU Q360`。
+5. 按 HACS 提示重启 Home Assistant。
+6. 重启后进入“设置 → 设备与服务 → 添加集成”，搜索 `AUPU Q360`。
 
-发布到真实仓库后，还需用真实仓库 URL 单独补充 manifest 的 `documentation` 与
-`issue_tracker`，再运行 HACS 和 hassfest 验证。当前代码不会写入虚假或占位 URL。
+当前代码不会写入虚假或占位 URL；没有完成第 1 至 3 步时，不能把 HACS/hassfest 声明为
+已经实证通过。
 
 ## 添加集成
 
