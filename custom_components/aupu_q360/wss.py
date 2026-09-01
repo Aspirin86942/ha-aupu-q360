@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
@@ -28,6 +29,7 @@ from .shadow import LightShadowUpdate
 _WSS_ENDPOINT = "wss://aii5h05kuofsj.ats.iot.cn-north-1.amazonaws.com.cn/mqtt"
 _RETRY_DELAYS = (2.0, 4.0, 8.0, 16.0, 30.0)
 _KEEP_ALIVE_SECONDS = 30
+_LOGGER = logging.getLogger(__name__)
 
 ConnectionCallback = Callable[[bool, bool], None]
 ShadowParser = Callable[[str, bytes], LightShadowUpdate | None]
@@ -97,7 +99,9 @@ class AupuShadowWebSocket:
     def _runner_done(self, task: asyncio.Task[None]) -> None:
         """Release the completed task reference and consume unexpected task errors."""
         if not task.cancelled():
-            task.exception()
+            exception = task.exception()
+            if exception is not None:
+                _LOGGER.error("AUPU WSS runner stopped unexpectedly")
         if self._runner_task is task:
             self._runner_task = None
 
@@ -174,13 +178,13 @@ class AupuShadowWebSocket:
                     raise AupuProtocolError
                 expected_subacks.remove(suback.packet_identifier)
 
+            self._ready_in_attempt = True
             await websocket.send_bytes(
                 encode_publish(
                     f"$aws/things/{self._device.did}/shadow/get",
                     b"{}",
                 )
             )
-            self._ready_in_attempt = True
             self._async_connection_changed(True, False)
             ping_task = asyncio.create_task(
                 self._ping_loop(websocket), name="aupu_q360_wss_ping"

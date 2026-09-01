@@ -91,12 +91,16 @@ class FakeWebSocket:
         *,
         auto_ping_response: bool = False,
         ping_failure: Exception | None = None,
+        send_failure_at: int | None = None,
+        send_failure: Exception | None = None,
     ) -> None:
         self.sent: list[bytes] = []
         self.messages: asyncio.Queue[FakeMessage] = asyncio.Queue()
         self.receive_started = asyncio.Event()
         self.auto_ping_response = auto_ping_response
         self.ping_failure = ping_failure
+        self.send_failure_at = send_failure_at
+        self.send_failure = send_failure
         self.closed = False
         self.close_calls = 0
 
@@ -108,6 +112,8 @@ class FakeWebSocket:
 
     async def send_bytes(self, data: bytes) -> None:
         self.sent.append(data)
+        if len(self.sent) == self.send_failure_at and self.send_failure is not None:
+            raise self.send_failure
         if data == b"\xc0\x00" and self.ping_failure is not None:
             raise self.ping_failure
         if data == b"\xc0\x00" and self.auto_ping_response:
@@ -314,6 +320,31 @@ async def test_retry_refetches_credentials_with_capped_backoff_and_stop_cancels_
 
 
 @direct_step
+async def test_suback_success_resets_accumulated_backoff_before_get_send() -> None:
+    """Catch a failed initial shadow/get retaining pre-handshake 30-second backoff."""
+    websocket = _ready_socket()
+    websocket.send_failure_at = 4
+    websocket.send_failure = aiohttp.ClientConnectionError("synthetic get failure")
+    failures = [aiohttp.ClientConnectionError("synthetic transport") for _ in range(5)]
+    session = FakeSession([*failures, websocket])
+    sleep = ControlledSleep()
+    client = _client(api=FakeApi(), session=session, sleep=sleep)
+
+    await client.async_start()
+    for expected_calls in range(1, 6):
+        await _wait_until(
+            lambda expected_calls=expected_calls: len(sleep.delays) == expected_calls
+        )
+        await sleep.release_next()
+    await _wait_until(lambda: len(sleep.delays) == 6)
+
+    assert sleep.delays == [2, 4, 8, 16, 30, 2]
+    assert websocket.sent[-1] == b"\xe0\x00"
+    assert websocket.close_calls == 1
+    await client.async_stop()
+
+
+@direct_step
 async def test_ping_send_failure_cancels_receive_and_reconnects() -> None:
     """Catch a failed keepalive leaving the receive loop blocked forever."""
     websocket = FakeWebSocket(
@@ -507,6 +538,46 @@ async def test_auth_failure_does_not_log_url_token_or_query_values(
         "synthetic-handshake-detail",
     )
     assert all(value not in rendered for value in forbidden)
+
+
+@direct_step
+async def test_unclassified_runner_failure_emits_one_fixed_redacted_log(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Catch programming errors silently terminating the WSS state channel."""
+    forbidden = (
+        WSS_ENDPOINT,
+        _token(),
+        "synthetic-authorizer-1",
+        "synthetic-signature-1",
+        "synthetic-token-key-1",
+        "synthetic-user-uuid-tailABCD-1700000000123",
+        DEVICE.did,
+    )
+    api = FakeApi()
+    api.failure = RuntimeError("|".join(forbidden))
+    client = _client(
+        api=api,
+        session=FakeSession([]),
+        sleep=ControlledSleep(),
+    )
+
+    await client.async_start()
+    await _wait_until(lambda: not client.is_running)
+    await _wait_until(
+        lambda: any(
+            record.name == "custom_components.aupu_q360.wss"
+            for record in caplog.records
+        )
+    )
+
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "custom_components.aupu_q360.wss"
+    ]
+    assert messages == ["AUPU WSS runner stopped unexpectedly"]
+    assert all(value not in caplog.text for value in forbidden)
 
 
 def test_wss_credentials_repr_and_protocol_errors_are_secret_free() -> None:
