@@ -1,14 +1,14 @@
 {
   "app_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
   "key_prefix": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-  "package_name": "com.kdyapp",
+  "package_name": "invalid.synthetic.package",
   "key_suffix": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
   "sdk_version": "1.2.3",
-  "message_prefix": "appkey=",
-  "sdk_label": "&sdkversion=",
-  "type_timestamp_label": "&apptype=android&timestamp=",
-  "header_prefix": "Synthetic: ",
-  "header_sep_1": ",Sdk=",
-  "header_sep_2": ",Timestamp=",
-  "signature_label": ",Signature="
+  "message_prefix": "<synthetic-app-key>",
+  "sdk_label": "<synthetic-sdk-version>",
+  "type_timestamp_label": "<synthetic-app-type-and-time>",
+  "header_prefix": "SyntheticAuthorization<",
+  "header_sep_1": "><synthetic-sdk>",
+  "header_sep_2": "><synthetic-time>",
+  "signature_label": "><synthetic-signature>"
 }

@@ -45,6 +45,18 @@ class SignerSecrets:
     header_sep_2: str
     signature_label: str
 
+    def __post_init__(self) -> None:
+        """Reject unusable direct construction without echoing field values."""
+        invalid = [
+            field
+            for field in _REQUIRED_FIELDS
+            if not isinstance(getattr(self, field), str) or not getattr(self, field)
+        ]
+        if invalid:
+            raise ValueError(
+                f"Signer secret fields must be non-empty strings: {', '.join(invalid)}"
+            )
+
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> SignerSecrets:
         """Validate a complete, exact secret mapping before using it."""
@@ -57,9 +69,7 @@ class SignerSecrets:
         unexpected = sorted(set(value) - set(_REQUIRED_FIELDS))
         if unexpected:
             raise ValueError(f"Signer secrets contain unexpected fields: {', '.join(unexpected)}")
-        secrets = cls(**{field: value[field] for field in _REQUIRED_FIELDS})
-        secrets._validate_format()
-        return secrets
+        return cls(**{field: value[field] for field in _REQUIRED_FIELDS})
 
     @classmethod
     def load(cls, path: str | Path) -> SignerSecrets:
@@ -78,18 +88,6 @@ class SignerSecrets:
             f"{field}=<len={len(getattr(self, field))}>" for field in _REQUIRED_FIELDS
         )
         return f"{type(self).__name__}({field_lengths})"
-
-    def _validate_format(self) -> None:
-        """Fail closed if an upstream package changes the recovered protocol format."""
-        if self.package_name != "com.kdyapp":
-            raise ValueError("Unexpected signer package name")
-        if self.sdk_label != "&sdkversion=":
-            raise ValueError("Unexpected signer sdkversion label")
-        if self.type_timestamp_label != "&apptype=android&timestamp=":
-            raise ValueError("Unexpected signer app type/timestamp label")
-        if self.signature_label != ",Signature=":
-            raise ValueError("Unexpected signer signature label")
-
 
 class AppAuthorizationSigner:
     """Generate and inspect an App-Authorization header without network I/O."""

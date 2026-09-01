@@ -5,7 +5,10 @@ from __future__ import annotations
 import argparse
 import hmac
 import json
+import os
+import subprocess
 import sys
+import tempfile
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +27,7 @@ _CAPTURE_FILES = (
 )
 _SAFE_FILE = Path("local-evidence/signer/signer-verification.safe.json")
 _SECRETS_FILE = Path(".private/signer_secrets.json")
+_CAPTURE_ROOT_ENV = "AUPU_Q360_CAPTURE_ROOT"
 
 
 class VerificationError(Exception):
@@ -35,7 +39,6 @@ def _parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--private-project-root",
         type=Path,
-        default=_PROJECT_ROOT,
         help="Project root that contains .private/ and local-evidence/.",
     )
     parser.add_argument(
@@ -44,6 +47,73 @@ def _parse_arguments() -> argparse.Namespace:
         help="Root directory containing the three unredacted HAR capture folders.",
     )
     return parser.parse_args()
+
+
+def _has_private_materials(project_root: Path) -> bool:
+    return (project_root / _SECRETS_FILE).is_file() and (project_root / _SAFE_FILE).is_file()
+
+
+def _git_common_worktree_root(repository_root: Path) -> Path | None:
+    if not (repository_root / ".git").is_file():
+        return None
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repository_root),
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-common-dir",
+            ],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    common_directory = Path(result.stdout.strip())
+    if not common_directory.is_absolute():
+        common_directory = repository_root / common_directory
+    return common_directory.resolve().parent
+
+
+def discover_private_project_root(
+    explicit_root: Path | None,
+    repository_root: Path,
+    common_worktree_root: Path | None = None,
+) -> Path:
+    """Choose local-only materials, including a linked-worktree fallback."""
+    if explicit_root is not None:
+        return explicit_root
+    if _has_private_materials(repository_root):
+        return repository_root
+    fallback = common_worktree_root or _git_common_worktree_root(repository_root)
+    if fallback is not None and _has_private_materials(fallback):
+        return fallback
+    return repository_root
+
+
+def discover_capture_root(
+    explicit_root: Path | None,
+    environ: Mapping[str, str],
+    temporary_root: Path,
+) -> Path | None:
+    """Select an explicit capture root or one unambiguous temporary candidate."""
+    if explicit_root is not None:
+        return explicit_root
+    environment_root = environ.get(_CAPTURE_ROOT_ENV)
+    if environment_root:
+        return Path(environment_root)
+    candidates = [
+        candidate
+        for candidate in temporary_root.glob("wechat-q360t5-capture-*")
+        if candidate.is_dir()
+        and all((candidate / relative_path).is_file() for relative_path in _CAPTURE_FILES)
+    ]
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def _load_json_object(path: Path, *, label: str) -> dict[str, Any]:
@@ -57,36 +127,31 @@ def _load_json_object(path: Path, *, label: str) -> dict[str, Any]:
 
 
 def _require_safe_fixture(value: Mapping[str, Any]) -> list[dict[str, Any]]:
-    required_types: dict[str, type[object]] = {
-        "algorithm": str,
-        "message_template": str,
-        "header_template": str,
-        "constant_lengths": dict,
-        "captured_request_count": int,
-        "exact_match_count": int,
-        "requests": list,
-    }
-    if any(not isinstance(value.get(key), value_type) for key, value_type in required_types.items()):
+    captured_request_count = value.get("captured_request_count")
+    exact_match_count = value.get("exact_match_count")
+    requests = value.get("requests")
+    if (
+        type(captured_request_count) is not int
+        or type(exact_match_count) is not int
+        or not isinstance(requests, list)
+    ):
         raise VerificationError("safe verification fixture has an unexpected structure")
+    if captured_request_count != 7 or exact_match_count != 7 or len(requests) != 7:
+        raise VerificationError("safe verification fixture must declare seven exact matches")
 
-    requests = value["requests"]
-    assert isinstance(requests, list)
     validated: list[dict[str, Any]] = []
     for request in requests:
         if not isinstance(request, dict):
             raise VerificationError("safe verification fixture has an unexpected request")
         required_request_types: dict[str, type[object]] = {
-            "phase": str,
             "method": str,
             "path": str,
-            "exact_match": bool,
-            "header_length": int,
             "timestamp_delta_from_har_seconds": int,
         }
         if any(
             not isinstance(request.get(key), value_type)
             for key, value_type in required_request_types.items()
-        ):
+        ) or request.get("exact_match") is not True:
             raise VerificationError("safe verification fixture has an unexpected request")
         validated.append(request)
     return validated
@@ -235,7 +300,16 @@ def run(private_project_root: Path, capture_root: Path | None) -> int:
 def main() -> int:
     """Parse CLI arguments and return the verification status."""
     args = _parse_arguments()
-    return run(args.private_project_root, args.capture_root)
+    private_project_root = discover_private_project_root(
+        args.private_project_root,
+        _PROJECT_ROOT,
+    )
+    capture_root = discover_capture_root(
+        args.capture_root,
+        os.environ,
+        Path(tempfile.gettempdir()),
+    )
+    return run(private_project_root, capture_root)
 
 
 if __name__ == "__main__":
