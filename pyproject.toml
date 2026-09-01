@@ -1,0 +1,28 @@
+[project]
+name = "aupu-q360-ha"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = []
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+
+[dependency-groups]
+dev = [
+    "mypy>=2.3.1",
+    "pytest>=6.2.3",
+    "pytest-asyncio>=0.20.3",
+    "ruff>=0.16.5",
+]
+ha-test = [
+    "pytest-homeassistant-custom-component>=0.3.2",
+]

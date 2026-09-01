@@ -1,0 +1,10 @@
+{
+  "domain": "aupu_q360",
+  "name": "AUPU Q360",
+  "codeowners": [],
+  "config_flow": true,
+  "integration_type": "device",
+  "iot_class": "cloud_push",
+  "requirements": [],
+  "version": "0.1.0"
+}

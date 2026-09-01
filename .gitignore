@@ -24,6 +24,7 @@ signer_secrets.json
 # Python and test artifacts
 __pycache__/
 *.py[cod]
+*.egg-info/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
