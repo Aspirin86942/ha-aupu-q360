@@ -63,9 +63,7 @@ class AupuCoordinator:
                 user_uuid=user_uuid,
                 async_connection_changed=self.async_apply_wss_connection,
                 async_auth_failed=self.async_handle_wss_auth_failure,
-                parse_shadow=lambda topic, payload: parse_shadow_update(
-                    device, topic, payload
-                ),
+                parse_shadow=lambda topic, payload: parse_shadow_update(device, topic, payload),
                 async_shadow_update=self.async_apply_shadow_update,
             )
             self._wss_missing_user_uuid = user_uuid is None

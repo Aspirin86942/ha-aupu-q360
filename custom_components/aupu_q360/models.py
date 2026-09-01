@@ -23,8 +23,10 @@ class DeviceConfig:
 
     def __post_init__(self) -> None:
         """Reject values that cannot be serialized into the confirmed payload."""
-        if not isinstance(self.did, str) or not self.did or not all(
-            "0" <= character <= "9" for character in self.did
+        if (
+            not isinstance(self.did, str)
+            or not self.did
+            or not all("0" <= character <= "9" for character in self.did)
         ):
             raise ValueError("Device identifier must be decimal digits")
         if not isinstance(self.tag, str) or not self.tag.strip():

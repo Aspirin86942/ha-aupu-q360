@@ -49,7 +49,14 @@ class BearerCredential:
         try:
             payload = _decode_payload(parts[1])
             expires_at = _expiry_from_exp(payload["exp"])
-        except (KeyError, TypeError, ValueError, OverflowError, json.JSONDecodeError, binascii.Error):
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+            OverflowError,
+            json.JSONDecodeError,
+            binascii.Error,
+        ):
             raise _invalid_credential() from None
         return cls(_token=token, expires_at=expires_at)
 

@@ -25,9 +25,7 @@ _ERROR_CODES = frozenset(
         "runtime_stopped",
     }
 )
-_STATE_SOURCES = frozenset(
-    {"unknown", "command", "reported", "desired", "get_reported"}
-)
+_STATE_SOURCES = frozenset({"unknown", "command", "reported", "desired", "get_reported"})
 
 ExpiryBucket = Literal["expired", "<24h", "<7d", ">=7d", "unknown"]
 
@@ -49,9 +47,7 @@ async def async_get_config_entry_diagnostics(
         _safe_expiry_bucket(credential) if runtime_complete else "unknown"
     )
     result["wss_enabled"] = (
-        _safe_bool(_safe_getattr(runtime, "use_wss", False))
-        if runtime_complete
-        else False
+        _safe_bool(_safe_getattr(runtime, "use_wss", False)) if runtime_complete else False
     )
     result["wss_connected"] = (
         _safe_bool(_safe_getattr(coordinator, "wss_connected", False))
@@ -59,9 +55,7 @@ async def async_get_config_entry_diagnostics(
         else False
     )
     result["wss_healthy"] = (
-        _safe_bool(_safe_getattr(coordinator, "wss_healthy", False))
-        if runtime_complete
-        else False
+        _safe_bool(_safe_getattr(coordinator, "wss_healthy", False)) if runtime_complete else False
     )
     result["last_error_code"] = (
         _safe_enum(

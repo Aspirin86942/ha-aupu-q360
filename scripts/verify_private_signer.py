@@ -148,10 +148,13 @@ def _require_safe_fixture(value: Mapping[str, Any]) -> list[dict[str, Any]]:
             "path": str,
             "timestamp_delta_from_har_seconds": int,
         }
-        if any(
-            not isinstance(request.get(key), value_type)
-            for key, value_type in required_request_types.items()
-        ) or request.get("exact_match") is not True:
+        if (
+            any(
+                not isinstance(request.get(key), value_type)
+                for key, value_type in required_request_types.items()
+            )
+            or request.get("exact_match") is not True
+        ):
             raise VerificationError("safe verification fixture has an unexpected request")
         validated.append(request)
     return validated
@@ -246,7 +249,11 @@ def run(private_project_root: Path, capture_root: Path | None) -> int:
         print("SKIP: private signer verification materials are unavailable.")
         return 0
     capture_paths = [capture_root / path for path in _CAPTURE_FILES]
-    if not secrets_path.is_file() or not safe_path.is_file() or not all(path.is_file() for path in capture_paths):
+    if (
+        not secrets_path.is_file()
+        or not safe_path.is_file()
+        or not all(path.is_file() for path in capture_paths)
+    ):
         print("SKIP: private signer verification materials are unavailable.")
         return 0
 

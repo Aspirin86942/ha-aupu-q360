@@ -374,9 +374,7 @@ def test_start_reconciles_repairs_for_each_jwt_state(
         "translation_key": created_id.removeprefix("entry-a_"),
     }
     stale_id = (
-        "entry-a_jwt_expired"
-        if created_id.endswith("jwt_expiring")
-        else "entry-a_jwt_expiring"
+        "entry-a_jwt_expired" if created_id.endswith("jwt_expiring") else "entry-a_jwt_expiring"
     )
     assert issues.deleted == [(DOMAIN, stale_id)]
 
@@ -514,12 +512,15 @@ def test_setup_starts_one_coordinator_stopper_and_adds_only_one_light(
         lambda _: object(),
     )
 
-    assert _run(
-        async_setup_entry(
-            cast(HomeAssistant, hass),
-            cast(ConfigEntry[AupuRuntimeData], entry),
+    assert (
+        _run(
+            async_setup_entry(
+                cast(HomeAssistant, hass),
+                cast(ConfigEntry[AupuRuntimeData], entry),
+            )
         )
-    ) is True
+        is True
+    )
     assert entry.runtime_data is not None
     coordinator = entry.runtime_data.coordinator
     assert entry.runtime_data.stoppers == [coordinator]
@@ -538,12 +539,15 @@ def test_setup_starts_one_coordinator_stopper_and_adds_only_one_light(
     assert "123456789" not in repr(entity.device_info)
     assert "synthetic-tag" not in repr(entity.device_info)
 
-    assert _run(
-        async_unload_entry(
-            cast(HomeAssistant, hass),
-            cast(ConfigEntry[AupuRuntimeData], entry),
+    assert (
+        _run(
+            async_unload_entry(
+                cast(HomeAssistant, hass),
+                cast(ConfigEntry[AupuRuntimeData], entry),
+            )
         )
-    ) is True
+        is True
+    )
     assert config_entries.unloaded == (Platform.LIGHT,)
     assert stop_calls == 1
     assert "runtime_data" not in entry.__dict__
@@ -554,9 +558,7 @@ def test_expired_setup_reconciles_repair_then_fails_auth_without_forwarding(
     issues: IssueRecorder,
 ) -> None:
     """Catch setup rejecting expired data before Repair or exposing a dead entity."""
-    entry = FakeEntry(
-        data=_persisted_data(token=_token(datetime.now(UTC) - timedelta(hours=1)))
-    )
+    entry = FakeEntry(data=_persisted_data(token=_token(datetime.now(UTC) - timedelta(hours=1))))
     config_entries = FakeConfigEntries()
     hass = FakeHass(config_entries)
     stop_calls = 0
@@ -626,22 +628,28 @@ def test_setup_and_unload_own_one_enabled_wss_lifecycle(
         lambda _: object(),
     )
 
-    assert _run(
-        async_setup_entry(
-            cast(HomeAssistant, hass),
-            cast(ConfigEntry[AupuRuntimeData], entry),
+    assert (
+        _run(
+            async_setup_entry(
+                cast(HomeAssistant, hass),
+                cast(ConfigEntry[AupuRuntimeData], entry),
+            )
         )
-    ) is True
+        is True
+    )
     assert entry.runtime_data is not None
     assert len(starts) == 1
     assert entry.runtime_data.stoppers == [entry.runtime_data.coordinator]
 
-    assert _run(
-        async_unload_entry(
-            cast(HomeAssistant, hass),
-            cast(ConfigEntry[AupuRuntimeData], entry),
+    assert (
+        _run(
+            async_unload_entry(
+                cast(HomeAssistant, hass),
+                cast(ConfigEntry[AupuRuntimeData], entry),
+            )
         )
-    ) is True
+        is True
+    )
     assert stops == starts
     assert "runtime_data" not in entry.__dict__
 
@@ -668,12 +676,15 @@ def test_missing_wss_user_uuid_requests_reauth_without_failing_setup(
         lambda _: object(),
     )
 
-    assert _run(
-        async_setup_entry(
-            cast(HomeAssistant, hass),
-            cast(ConfigEntry[AupuRuntimeData], entry),
+    assert (
+        _run(
+            async_setup_entry(
+                cast(HomeAssistant, hass),
+                cast(ConfigEntry[AupuRuntimeData], entry),
+            )
         )
-    ) is True
+        is True
+    )
     assert len(starts) == 1
     assert starts[0].is_running is False
     assert entry.reauth_calls == 1
@@ -681,9 +692,12 @@ def test_missing_wss_user_uuid_requests_reauth_without_failing_setup(
     assert config_entries.entities[0].is_on is None
     assert config_entries.entities[0].assumed_state is True
 
-    assert _run(
-        async_unload_entry(
-            cast(HomeAssistant, hass),
-            cast(ConfigEntry[AupuRuntimeData], entry),
+    assert (
+        _run(
+            async_unload_entry(
+                cast(HomeAssistant, hass),
+                cast(ConfigEntry[AupuRuntimeData], entry),
+            )
         )
-    ) is True
+        is True
+    )

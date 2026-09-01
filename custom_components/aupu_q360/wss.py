@@ -186,9 +186,7 @@ class AupuShadowWebSocket:
                 )
             )
             self._async_connection_changed(True, False)
-            ping_task = asyncio.create_task(
-                self._ping_loop(websocket), name="aupu_q360_wss_ping"
-            )
+            ping_task = asyncio.create_task(self._ping_loop(websocket), name="aupu_q360_wss_ping")
             receive_task = asyncio.create_task(
                 self._receive_loop(websocket, decoder, pending),
                 name="aupu_q360_wss_receive",
@@ -203,9 +201,7 @@ class AupuShadowWebSocket:
             for task in done:
                 await task
         finally:
-            background = tuple(
-                task for task in (ping_task, receive_task) if task is not None
-            )
+            background = tuple(task for task in (ping_task, receive_task) if task is not None)
             for task in background:
                 task.cancel()
             if background:
@@ -253,9 +249,7 @@ async def _receive_packet(
     """Read binary frames until one complete MQTT packet is available."""
     while not pending:
         message = await websocket.receive()
-        if message.type is not aiohttp.WSMsgType.BINARY or not isinstance(
-            message.data, bytes
-        ):
+        if message.type is not aiohttp.WSMsgType.BINARY or not isinstance(message.data, bytes):
             raise AupuProtocolError
         pending.extend(decoder.feed(message.data))
     return pending.popleft()

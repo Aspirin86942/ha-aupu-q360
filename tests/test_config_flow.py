@@ -102,9 +102,9 @@ class FakeEntry:
     domain: str = DOMAIN
     title: str = "AUPU Q360"
     runtime_data: AupuRuntimeData | None = None
-    update_listeners: list[Callable[[HomeAssistant, ConfigEntry[Any]], Coroutine[Any, Any, None]]] = field(
-        default_factory=list
-    )
+    update_listeners: list[
+        Callable[[HomeAssistant, ConfigEntry[Any]], Coroutine[Any, Any, None]]
+    ] = field(default_factory=list)
     unload_callbacks: list[Callable[[], Coroutine[Any, Any, None] | None]] = field(
         default_factory=list
     )
@@ -127,9 +127,7 @@ class FakeEntry:
 
         return unsubscribe
 
-    def async_on_unload(
-        self, callback: Callable[[], Coroutine[Any, Any, None] | None]
-    ) -> None:
+    def async_on_unload(self, callback: Callable[[], Coroutine[Any, Any, None] | None]) -> None:
         """Keep listener cleanup until the fake manager completes unload."""
         self.unload_callbacks.append(callback)
 
@@ -178,17 +176,11 @@ class FakeConfigEntries:
     def async_entry_for_domain_unique_id(
         self, domain: str, unique_id: str
     ) -> ConfigEntry[Any] | None:
-        if (
-            self.entry is not None
-            and domain == DOMAIN
-            and self.entry.unique_id == unique_id
-        ):
+        if self.entry is not None and domain == DOMAIN and self.entry.unique_id == unique_id:
             return cast(ConfigEntry[Any], self.entry)
         return None
 
-    def async_entries(
-        self, domain: str, include_ignore: bool = True
-    ) -> list[ConfigEntry[Any]]:
+    def async_entries(self, domain: str, include_ignore: bool = True) -> list[ConfigEntry[Any]]:
         del include_ignore
         if self.entry is None or domain != DOMAIN:
             return []
@@ -213,9 +205,7 @@ class FakeConfigEntries:
         fake_entry.data = dict(data)
         assert self.hass is not None
         for listener in fake_entry.update_listeners:
-            self.listener_tasks.append(
-                asyncio.create_task(listener(self.hass, entry))
-            )
+            self.listener_tasks.append(asyncio.create_task(listener(self.hass, entry)))
         return True
 
     async def async_wait_for_update_listeners(self) -> None:
@@ -352,9 +342,7 @@ def test_user_step_defaults_to_https_only_without_network(
         ({"tag": "   "}, "invalid_device"),
     ],
 )
-def test_user_step_rejects_invalid_local_input(
-    updates: dict[str, object], error: str
-) -> None:
+def test_user_step_rejects_invalid_local_input(updates: dict[str, object], error: str) -> None:
     """Catch local validation branches accepting unusable persisted data."""
     flow, _ = prepare_config_flow()
 
@@ -403,9 +391,7 @@ def test_wss_requires_confirmation_then_verifies_once(
             del kwargs
             assert session is session_sentinel
 
-        async def request(
-            self, method: str, path: str, *, json: Mapping[str, Any]
-        ) -> ApiResponse:
+        async def request(self, method: str, path: str, *, json: Mapping[str, Any]) -> ApiResponse:
             requests.append((method, path, json))
             return ApiResponse(
                 status=0,
@@ -423,9 +409,7 @@ def test_wss_requires_confirmation_then_verifies_once(
         "custom_components.aupu_q360.config_flow.async_get_clientsession",
         lambda _: session_sentinel,
     )
-    monkeypatch.setattr(
-        "custom_components.aupu_q360.config_flow.AupuApiClient", FakeApiClient
-    )
+    monkeypatch.setattr("custom_components.aupu_q360.config_flow.AupuApiClient", FakeApiClient)
     flow, _ = prepare_config_flow()
 
     confirmation = _run(flow.async_step_user(user_input(use_wss=True)))
@@ -440,9 +424,7 @@ def test_wss_requires_confirmation_then_verifies_once(
     assert result["data"]["use_wss"] is True
     assert result["data"]["user_uuid"] == "synthetic-user-uuid"
     assert "not-persisted" not in repr(result["data"])
-    assert requests == [
-        ("GET", "/authserver/auth/user/terminal/info", {})
-    ]
+    assert requests == [("GET", "/authserver/auth/user/terminal/info", {})]
 
 
 def test_wss_verification_failure_does_not_create_partial_entry(
@@ -457,9 +439,7 @@ def test_wss_verification_failure_does_not_create_partial_entry(
         def __init__(self, **kwargs: object) -> None:
             del kwargs
 
-        async def request(
-            self, method: str, path: str, *, json: Mapping[str, Any]
-        ) -> ApiResponse:
+        async def request(self, method: str, path: str, *, json: Mapping[str, Any]) -> ApiResponse:
             requests.append((method, path, json))
             return ApiResponse(
                 status=0,
@@ -471,9 +451,7 @@ def test_wss_verification_failure_does_not_create_partial_entry(
         "custom_components.aupu_q360.config_flow.async_get_clientsession",
         lambda _: object(),
     )
-    monkeypatch.setattr(
-        "custom_components.aupu_q360.config_flow.AupuApiClient", FakeApiClient
-    )
+    monkeypatch.setattr("custom_components.aupu_q360.config_flow.AupuApiClient", FakeApiClient)
     flow, hass = prepare_config_flow()
     _run(flow.async_step_user(user_input(use_wss=True)))
 
@@ -508,11 +486,7 @@ def test_options_invalid_token_keeps_loaded_runtime_unchanged(
         "custom_components.aupu_q360.async_get_clientsession",
         lambda _: object(),
     )
-    _run(
-        async_setup_entry(
-            cast(HomeAssistant, hass), cast(ConfigEntry[AupuRuntimeData], entry)
-        )
-    )
+    _run(async_setup_entry(cast(HomeAssistant, hass), cast(ConfigEntry[AupuRuntimeData], entry)))
     old_runtime = entry.runtime_data
     assert old_runtime is not None
     flow = AupuOptionsFlow()
@@ -551,11 +525,7 @@ def test_options_can_replace_an_expired_stored_token(
         {"exp": int(time.time()) + 7 * 24 * 60 * 60, "sub": "replacement"}
     )
 
-    result = _run(
-        flow.async_step_init(
-            {"token": replacement, "phone": "", "use_wss": False}
-        )
-    )
+    result = _run(flow.async_step_init({"token": replacement, "phone": "", "use_wss": False}))
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert entry.data == {**old_data, "token": replacement}
@@ -609,11 +579,7 @@ def test_https_only_options_preserve_sms_login_user_uuid(
         lambda _: object(),
     )
 
-    result = _run(
-        flow.async_step_init(
-            {"token": "", "phone": "13800000000", "use_wss": False}
-        )
-    )
+    result = _run(flow.async_step_init({"token": "", "phone": "13800000000", "use_wss": False}))
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert entry.data == {**old_data, "phone": "13800000000"}
@@ -632,11 +598,7 @@ def test_loaded_options_update_reloads_runtime_once(
         "custom_components.aupu_q360.async_get_clientsession",
         lambda _: object(),
     )
-    _run(
-        async_setup_entry(
-            cast(HomeAssistant, hass), cast(ConfigEntry[AupuRuntimeData], entry)
-        )
-    )
+    _run(async_setup_entry(cast(HomeAssistant, hass), cast(ConfigEntry[AupuRuntimeData], entry)))
     old_runtime = entry.runtime_data
     assert old_runtime is not None
     replacement = make_synthetic_jwt(
@@ -648,11 +610,7 @@ def test_loaded_options_update_reloads_runtime_once(
     flow.flow_id = "loaded-options-flow"
     flow.context = {"source": "init"}
 
-    result = _run(
-        flow.async_step_init(
-            {"token": replacement, "phone": "", "use_wss": False}
-        )
-    )
+    result = _run(flow.async_step_init({"token": replacement, "phone": "", "use_wss": False}))
     _run(hass.config_entries.async_wait_for_update_listeners())
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
@@ -777,9 +735,7 @@ def test_loaded_manual_reauth_rejects_current_token_then_listener_reloads_once(
     flow.flow_id = "loaded-manual-reauth"
     flow.context = {"source": SOURCE_REAUTH, "entry_id": entry.entry_id}
 
-    unchanged = _run(
-        flow.async_step_reauth_manual_token({"token": old_data["token"]})
-    )
+    unchanged = _run(flow.async_step_reauth_manual_token({"token": old_data["token"]}))
 
     assert unchanged["type"] is FlowResultType.FORM
     assert unchanged["errors"] == {"base": "invalid_token"}
@@ -791,9 +747,7 @@ def test_loaded_manual_reauth_rejects_current_token_then_listener_reloads_once(
     replacement = make_synthetic_jwt(
         {"exp": int(time.time()) + 7 * 24 * 60 * 60, "sub": "loaded-reauth"}
     )
-    success = _run(
-        flow.async_step_reauth_manual_token({"token": replacement})
-    )
+    success = _run(flow.async_step_reauth_manual_token({"token": replacement}))
     _run(hass.config_entries.async_wait_for_update_listeners())
 
     assert success["type"] is FlowResultType.ABORT
@@ -851,9 +805,7 @@ def test_sms_reauth_sends_only_after_submit_and_persists_no_code(
     assert before_submit["step_id"] == "reauth_sms_send"
     assert calls == []
 
-    sent = _run(
-        flow.async_step_reauth_sms_send({"phone": "13800000000", "save_phone": False})
-    )
+    sent = _run(flow.async_step_reauth_sms_send({"phone": "13800000000", "save_phone": False}))
     assert sent["step_id"] == "reauth_sms_code"
     assert calls == [("sms", "13800000000")]
 
@@ -943,9 +895,7 @@ def test_sms_reauth_rejects_repeat_send_within_sixty_seconds(
     _run(flow.async_step_reauth_method({"method": "sms"}))
 
     _run(flow.async_step_reauth_sms_send({"phone": "13800000000", "save_phone": False}))
-    repeated = _run(
-        flow.async_step_reauth_sms_send({"phone": "13800000000", "save_phone": False})
-    )
+    repeated = _run(flow.async_step_reauth_sms_send({"phone": "13800000000", "save_phone": False}))
 
     assert repeated["type"] is FlowResultType.FORM
     assert repeated["errors"] == {"base": "sms_rate_limited"}
@@ -1052,11 +1002,7 @@ def test_failed_expired_setup_options_recovery_reloads_and_clears_repairs_once(
     flow.handler = entry.entry_id
     flow.flow_id = "failed-options-recovery"
     flow.context = {"source": "init"}
-    result = _run(
-        flow.async_step_init(
-            {"token": replacement, "phone": "", "use_wss": False}
-        )
-    )
+    result = _run(flow.async_step_init({"token": replacement, "phone": "", "use_wss": False}))
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert hass.config_entries.update_calls == 1
@@ -1081,9 +1027,7 @@ def test_setup_builds_runtime_and_forwards_light_without_network(
     )
 
     result = _run(
-        async_setup_entry(
-            cast(HomeAssistant, hass), cast(ConfigEntry[AupuRuntimeData], entry)
-        )
+        async_setup_entry(cast(HomeAssistant, hass), cast(ConfigEntry[AupuRuntimeData], entry))
     )
 
     assert result is True
@@ -1179,9 +1123,7 @@ def test_forward_failure_survives_cancelled_stopper(
     entry = FakeEntry(data=persisted_data())
     hass = FakeHass(FakeConfigEntries(entry))
     primary_error = RuntimeError("synthetic forward failure")
-    cancelled_stopper = Stopper(
-        asyncio.CancelledError("private cancellation detail")
-    )
+    cancelled_stopper = Stopper(asyncio.CancelledError("private cancellation detail"))
     remaining_stopper = Stopper()
     hass.config_entries.forward_stoppers = [cancelled_stopper, remaining_stopper]
     hass.config_entries.forward_error = primary_error
@@ -1258,15 +1200,9 @@ def test_successful_unload_continues_after_cancelled_stopper(
         "custom_components.aupu_q360.async_get_clientsession",
         lambda _: object(),
     )
-    _run(
-        async_setup_entry(
-            cast(HomeAssistant, hass), cast(ConfigEntry[AupuRuntimeData], entry)
-        )
-    )
+    _run(async_setup_entry(cast(HomeAssistant, hass), cast(ConfigEntry[AupuRuntimeData], entry)))
     assert entry.runtime_data is not None
-    cancelled_stopper = Stopper(
-        asyncio.CancelledError("private cancellation detail")
-    )
+    cancelled_stopper = Stopper(asyncio.CancelledError("private cancellation detail"))
     remaining_stopper = Stopper()
     entry.runtime_data.stoppers.extend([cancelled_stopper, remaining_stopper])
 
@@ -1297,11 +1233,7 @@ def test_successful_unload_propagates_external_cancel(
         "custom_components.aupu_q360.async_get_clientsession",
         lambda _: object(),
     )
-    _run(
-        async_setup_entry(
-            cast(HomeAssistant, hass), cast(ConfigEntry[AupuRuntimeData], entry)
-        )
-    )
+    _run(async_setup_entry(cast(HomeAssistant, hass), cast(ConfigEntry[AupuRuntimeData], entry)))
     assert entry.runtime_data is not None
     blocking_stopper = BlockingStopper()
     remaining_stopper = Stopper()
@@ -1340,11 +1272,7 @@ def test_teardown_preserves_cancel_requested_before_helper_entry(
         "custom_components.aupu_q360.async_get_clientsession",
         lambda _: object(),
     )
-    _run(
-        async_setup_entry(
-            cast(HomeAssistant, hass), cast(ConfigEntry[AupuRuntimeData], entry)
-        )
-    )
+    _run(async_setup_entry(cast(HomeAssistant, hass), cast(ConfigEntry[AupuRuntimeData], entry)))
     assert entry.runtime_data is not None
     yielding_stopper = YieldingStopper()
     remaining_stopper = Stopper()
@@ -1355,9 +1283,7 @@ def test_teardown_preserves_cancel_requested_before_helper_entry(
         assert task is not None
         task.cancel("marker")
         with pytest.raises(asyncio.CancelledError) as raised:
-            await _async_teardown_runtime(
-                cast(ConfigEntry[AupuRuntimeData], entry)
-            )
+            await _async_teardown_runtime(cast(ConfigEntry[AupuRuntimeData], entry))
         assert raised.value.args == ("marker",)
 
     with caplog.at_level(logging.ERROR, logger="custom_components.aupu_q360"):
@@ -1381,11 +1307,7 @@ def test_teardown_preserves_first_of_multiple_external_cancellations(
         "custom_components.aupu_q360.async_get_clientsession",
         lambda _: object(),
     )
-    _run(
-        async_setup_entry(
-            cast(HomeAssistant, hass), cast(ConfigEntry[AupuRuntimeData], entry)
-        )
-    )
+    _run(async_setup_entry(cast(HomeAssistant, hass), cast(ConfigEntry[AupuRuntimeData], entry)))
     assert entry.runtime_data is not None
     first_blocking_stopper = BlockingStopper()
     second_blocking_stopper = BlockingStopper()
@@ -1431,24 +1353,16 @@ def test_teardown_propagates_control_base_exception(
         "custom_components.aupu_q360.async_get_clientsession",
         lambda _: object(),
     )
-    _run(
-        async_setup_entry(
-            cast(HomeAssistant, hass), cast(ConfigEntry[AupuRuntimeData], entry)
-        )
-    )
+    _run(async_setup_entry(cast(HomeAssistant, hass), cast(ConfigEntry[AupuRuntimeData], entry)))
     assert entry.runtime_data is not None
     control_error = control_error_type("private control exception detail")
     control_stopper = Stopper(control_error)
     remaining_stopper = Stopper()
-    entry.runtime_data.stoppers.extend(
-        [control_stopper, remaining_stopper]
-    )
+    entry.runtime_data.stoppers.extend([control_stopper, remaining_stopper])
 
     async def assert_control_exception_propagates() -> None:
         with pytest.raises(control_error_type) as raised:
-            await _async_teardown_runtime(
-                cast(ConfigEntry[AupuRuntimeData], entry)
-            )
+            await _async_teardown_runtime(cast(ConfigEntry[AupuRuntimeData], entry))
         assert raised.value is control_error
 
     with caplog.at_level(logging.ERROR, logger="custom_components.aupu_q360"):
@@ -1471,19 +1385,13 @@ def test_successful_unload_stops_runtime_and_clears_reference(
         "custom_components.aupu_q360.async_get_clientsession",
         lambda _: object(),
     )
-    _run(
-        async_setup_entry(
-            cast(HomeAssistant, hass), cast(ConfigEntry[AupuRuntimeData], entry)
-        )
-    )
+    _run(async_setup_entry(cast(HomeAssistant, hass), cast(ConfigEntry[AupuRuntimeData], entry)))
     assert entry.runtime_data is not None
     stopper = Stopper()
     entry.runtime_data.stoppers.append(stopper)
 
     result = _run(
-        async_unload_entry(
-            cast(HomeAssistant, hass), cast(ConfigEntry[AupuRuntimeData], entry)
-        )
+        async_unload_entry(cast(HomeAssistant, hass), cast(ConfigEntry[AupuRuntimeData], entry))
     )
 
     assert result is True
@@ -1506,19 +1414,13 @@ def test_failed_platform_unload_keeps_runtime_running(
         "custom_components.aupu_q360.async_get_clientsession",
         lambda _: object(),
     )
-    _run(
-        async_setup_entry(
-            cast(HomeAssistant, hass), cast(ConfigEntry[AupuRuntimeData], entry)
-        )
-    )
+    _run(async_setup_entry(cast(HomeAssistant, hass), cast(ConfigEntry[AupuRuntimeData], entry)))
     assert entry.runtime_data is not None
     stopper = Stopper()
     entry.runtime_data.stoppers.append(stopper)
 
     result = _run(
-        async_unload_entry(
-            cast(HomeAssistant, hass), cast(ConfigEntry[AupuRuntimeData], entry)
-        )
+        async_unload_entry(cast(HomeAssistant, hass), cast(ConfigEntry[AupuRuntimeData], entry))
     )
 
     assert result is False

@@ -48,12 +48,8 @@ _PATTERNS = {
         rb"[A-Za-z0-9_-]{10,}\."
         rb"[A-Za-z0-9_-]{10,}(?![A-Za-z0-9_-])"
     ),
-    "bearer": re.compile(
-        rb"\bBearer[ \t]+[A-Za-z0-9._~+/=-]{20,}", re.IGNORECASE
-    ),
-    "phone": re.compile(
-        rb"(?<![A-Za-z0-9])1[3-9][0-9]{9}(?![A-Za-z0-9])"
-    ),
+    "bearer": re.compile(rb"\bBearer[ \t]+[A-Za-z0-9._~+/=-]{20,}", re.IGNORECASE),
+    "phone": re.compile(rb"(?<![A-Za-z0-9])1[3-9][0-9]{9}(?![A-Za-z0-9])"),
     "private_key": re.compile(
         rb"-----BEGIN (?:ENCRYPTED |RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----"
     ),
@@ -82,9 +78,7 @@ _PATTERNS = {
 
 _ALLOWED_SYNTHETIC_VALUES = frozenset(
     {
-        b"syntheticFixtureHeader."
-        + b"syntheticFixturePayload."
-        + b"syntheticFixtureSignature",
+        b"syntheticFixtureHeader." + b"syntheticFixturePayload." + b"syntheticFixtureSignature",
         b"Bearer " + b"synthetic-fixture-token-" + b"000000000",
         b"138" + b"0000" + b"0000",
         b"synthetic-sensitive-" + b"exception-sentinel",
@@ -95,41 +89,41 @@ _ALLOWED_SYNTHETIC_VALUES = frozenset(
 )
 _SENSITIVE_NAMES = frozenset(
     {
-    "authorization",
-    "appauthorization",
-    "bearer",
-    "token",
-    "accesstoken",
-    "refreshtoken",
-    "authtoken",
-    "idtoken",
-    "jwt",
-    "cookie",
-    "session",
-    "sessionid",
-    "jsessionid",
-    "sign",
-    "sig",
-    "signature",
-    "signaturevalue",
-    "appsignature",
-    "xappsign",
-    "phone",
-    "phonenumber",
-    "mobile",
-    "mobilenumber",
-    "mobilephone",
-    "cellphone",
-    "msisdn",
-    "did",
-    "deviceid",
-    "deviceidentifier",
-    "deviceuuid",
-    "clientid",
-    "useruuid",
-    "credential",
-    "secret",
-    "appkey",
+        "authorization",
+        "appauthorization",
+        "bearer",
+        "token",
+        "accesstoken",
+        "refreshtoken",
+        "authtoken",
+        "idtoken",
+        "jwt",
+        "cookie",
+        "session",
+        "sessionid",
+        "jsessionid",
+        "sign",
+        "sig",
+        "signature",
+        "signaturevalue",
+        "appsignature",
+        "xappsign",
+        "phone",
+        "phonenumber",
+        "mobile",
+        "mobilenumber",
+        "mobilephone",
+        "cellphone",
+        "msisdn",
+        "did",
+        "deviceid",
+        "deviceidentifier",
+        "deviceuuid",
+        "clientid",
+        "useruuid",
+        "credential",
+        "secret",
+        "appkey",
     }
 )
 _LOW_SIGNER_FIELDS = frozenset(
@@ -198,7 +192,9 @@ def _parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _git(repository_root: Path, arguments: list[str], *, input_bytes: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
+def _git(
+    repository_root: Path, arguments: list[str], *, input_bytes: bytes | None = None
+) -> subprocess.CompletedProcess[bytes]:
     try:
         return subprocess.run(
             ["git", "-C", str(repository_root), *arguments],
@@ -215,9 +211,7 @@ def _tracked_regular_files(repository_root: Path) -> list[tuple[str, Path]]:
     if result.returncode != 0:
         raise ScanFailure
     try:
-        relative_paths = [
-            item.decode("utf-8") for item in result.stdout.split(b"\0") if item
-        ]
+        relative_paths = [item.decode("utf-8") for item in result.stdout.split(b"\0") if item]
     except UnicodeDecodeError as exc:
         raise ScanFailure from exc
 
@@ -247,9 +241,7 @@ def _missing_ignore_rules(repository_root: Path) -> list[str]:
     if result.returncode not in (0, 1):
         raise ScanFailure
     try:
-        ignored = {
-            item.decode("utf-8") for item in result.stdout.split(b"\0") if item
-        }
+        ignored = {item.decode("utf-8") for item in result.stdout.split(b"\0") if item}
     except UnicodeDecodeError as exc:
         raise ScanFailure from exc
     return [sample for sample in _IGNORE_SAMPLES if sample not in ignored]
@@ -412,18 +404,14 @@ def _private_candidates(
             if not all(existing):
                 raise ScanFailure
             for capture_path in capture_paths:
-                for source, field_name, value in _har_sensitive_items(
-                    _read_json(capture_path)
-                ):
+                for source, field_name, value in _har_sensitive_items(_read_json(capture_path)):
                     sensitivity: CandidateSensitivity = (
                         "low"
                         if source == "har_cookie"
                         or _normalized_name(field_name) in _IDENTIFIER_NAMES
                         else "high"
                     )
-                    candidates.add(
-                        _PrivateCandidate(value, source, sensitivity, field_name)
-                    )
+                    candidates.add(_PrivateCandidate(value, source, sensitivity, field_name))
     return list(candidates), available
 
 
@@ -521,8 +509,7 @@ def _private_candidate_occurs(candidate: _PrivateCandidate, content: bytes) -> b
     except ValueError:
         return False
     return any(
-        _normalized_name(name) == expected_name and value == candidate.value
-        for name, value in form
+        _normalized_name(name) == expected_name and value == candidate.value for name, value in form
     )
 
 
@@ -565,17 +552,14 @@ def _candidate_variants(value: str) -> frozenset[bytes]:
 
 def _safe_relative_path(value: str) -> str:
     return "".join(
-        character if character.isalnum() or character in "._/-" else "?"
-        for character in value
+        character if character.isalnum() or character in "._/-" else "?" for character in value
     )
 
 
 def _print_hits(hits: Counter[tuple[str, str]]) -> int:
     total = sum(hits.values())
     for (hit_type, relative_path), count in sorted(hits.items()):
-        print(
-            f"hit_type={hit_type} file={_safe_relative_path(relative_path)} count={count}"
-        )
+        print(f"hit_type={hit_type} file={_safe_relative_path(relative_path)} count={count}")
     print(f"sensitive_hit_count={total}")
     return total
 

@@ -210,9 +210,7 @@ def _local_error(exc: Exception) -> str:
     return "invalid_token"
 
 
-async def _async_verify_terminal_info(
-    hass: HomeAssistant, candidate: AupuConfigEntryData
-) -> str:
+async def _async_verify_terminal_info(hass: HomeAssistant, candidate: AupuConfigEntryData) -> str:
     """Perform exactly one confirmed read-only request and extract user UUID."""
     signer = AppAuthorizationSigner(candidate.secrets)
     api = AupuApiClient(
@@ -276,9 +274,7 @@ class AupuConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if candidate.use_wss:
             self._pending = candidate
-            return self.async_show_form(
-                step_id="confirm_wss", data_schema=_confirm_schema()
-            )
+            return self.async_show_form(step_id="confirm_wss", data_schema=_confirm_schema())
         return self._create_entry(candidate)
 
     async def async_step_confirm_wss(
@@ -288,9 +284,7 @@ class AupuConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if self._pending is None:
             return self.async_abort(reason="invalid_state")
         if user_input is None:
-            return self.async_show_form(
-                step_id="confirm_wss", data_schema=_confirm_schema()
-            )
+            return self.async_show_form(step_id="confirm_wss", data_schema=_confirm_schema())
         try:
             user_uuid = await _async_verify_terminal_info(self.hass, self._pending)
             candidate = AupuConfigEntryData.from_mapping(
@@ -336,9 +330,7 @@ class AupuConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Send one SMS only after submission and remember its local expiry window."""
         entry = self._get_reauth_entry()
         try:
-            current = AupuConfigEntryData.from_mapping(
-                entry.data, require_unexpired_token=False
-            )
+            current = AupuConfigEntryData.from_mapping(entry.data, require_unexpired_token=False)
         except (AupuError, TypeError, ValueError):
             return self.async_abort(reason="invalid_entry")
         if user_input is None:
@@ -408,9 +400,7 @@ class AupuConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             )
         entry = self._get_reauth_entry()
         try:
-            current = AupuConfigEntryData.from_mapping(
-                entry.data, require_unexpired_token=False
-            )
+            current = AupuConfigEntryData.from_mapping(entry.data, require_unexpired_token=False)
             api = AupuApiClient(
                 session=async_get_clientsession(self.hass),
                 signer=AppAuthorizationSigner(current.secrets),
@@ -440,9 +430,7 @@ class AupuConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Atomically replace an expired or rejected token and reload once."""
         entry = self._get_reauth_entry()
         try:
-            current = AupuConfigEntryData.from_mapping(
-                entry.data, require_unexpired_token=False
-            )
+            current = AupuConfigEntryData.from_mapping(entry.data, require_unexpired_token=False)
         except (AupuError, TypeError, ValueError):
             return self.async_abort(reason="invalid_entry")
         if user_input is None:
@@ -475,9 +463,7 @@ class AupuConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_update_and_abort(entry, data=candidate.as_mapping())
         return self.async_update_reload_and_abort(entry, data=candidate.as_mapping())
 
-    def _create_entry(
-        self, candidate: AupuConfigEntryData
-    ) -> config_entries.ConfigFlowResult:
+    def _create_entry(self, candidate: AupuConfigEntryData) -> config_entries.ConfigFlowResult:
         """Persist only the validated JSON projection under a fixed title."""
         return self.async_create_entry(title=_ENTRY_TITLE, data=candidate.as_mapping())
 
@@ -503,9 +489,7 @@ class AupuOptionsFlow(config_entries.OptionsFlow):
 
         try:
             submitted_token = user_input.get(_CONF_TOKEN, "")
-            token = _parse_token(
-                current.token if submitted_token == "" else submitted_token
-            )
+            token = _parse_token(current.token if submitted_token == "" else submitted_token)
             phone = user_input.get(_CONF_PHONE, current.phone)
             use_wss = user_input.get(_CONF_USE_WSS, current.use_wss)
             candidate = AupuConfigEntryData.from_mapping(
@@ -527,9 +511,7 @@ class AupuOptionsFlow(config_entries.OptionsFlow):
 
         if candidate.use_wss:
             self._pending = candidate
-            return self.async_show_form(
-                step_id="confirm_wss", data_schema=_confirm_schema()
-            )
+            return self.async_show_form(step_id="confirm_wss", data_schema=_confirm_schema())
         return await self._async_update_entry(candidate)
 
     async def async_step_confirm_wss(
@@ -539,9 +521,7 @@ class AupuOptionsFlow(config_entries.OptionsFlow):
         if self._pending is None:
             return self.async_abort(reason="invalid_state")
         if user_input is None:
-            return self.async_show_form(
-                step_id="confirm_wss", data_schema=_confirm_schema()
-            )
+            return self.async_show_form(step_id="confirm_wss", data_schema=_confirm_schema())
         try:
             user_uuid = await _async_verify_terminal_info(self.hass, self._pending)
             candidate = AupuConfigEntryData.from_mapping(

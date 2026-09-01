@@ -80,9 +80,7 @@ class AupuLight(LightEntity):
 
     async def async_added_to_hass(self) -> None:
         """Listen for coordinator state changes while the entity is loaded."""
-        self._remove_listener = self._coordinator.async_add_listener(
-            self.async_write_ha_state
-        )
+        self._remove_listener = self._coordinator.async_add_listener(self.async_write_ha_state)
 
     async def async_will_remove_from_hass(self) -> None:
         """Release the coordinator listener during platform unload."""

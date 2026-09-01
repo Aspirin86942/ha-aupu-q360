@@ -94,21 +94,16 @@ def test_mqtt_utf8_encoder_rejects_forbidden_control_characters(control: str) ->
 def test_mqtt_utf8_decoder_rejects_forbidden_control_characters(control: str) -> None:
     """Catch decoded PUBLISH Topic Names retaining forbidden control code points."""
     encoded = control.encode("utf-8")
-    packet = (
-        b"\x30"
-        + bytes((2 + len(encoded),))
-        + len(encoded).to_bytes(2, "big")
-        + encoded
-    )
+    packet = b"\x30" + bytes((2 + len(encoded),)) + len(encoded).to_bytes(2, "big") + encoded
     with pytest.raises(AupuProtocolError):
         decode_packets(packet)
 
 
 def test_ping_packets_are_exact_mqtt_311_bytes() -> None:
     """Catch a heartbeat packet whose required fixed bytes are changed."""
-    assert encode_pingreq() == b"\xC0\x00"
-    assert encode_disconnect() == b"\xE0\x00"
-    assert decode_packets(b"\xD0\x00")[0].packet_type is PacketType.PINGRESP
+    assert encode_pingreq() == b"\xc0\x00"
+    assert encode_disconnect() == b"\xe0\x00"
+    assert decode_packets(b"\xd0\x00")[0].packet_type is PacketType.PINGRESP
 
 
 def test_connack_and_suback_decode_fixed_mqtt_311_bytes() -> None:
@@ -132,9 +127,7 @@ def test_connack_and_suback_decode_fixed_mqtt_311_bytes() -> None:
         (16_384, b"\x80\x80\x01"),
     ],
 )
-def test_remaining_length_uses_canonical_base_128_boundaries(
-    value: int, encoded: bytes
-) -> None:
+def test_remaining_length_uses_canonical_base_128_boundaries(value: int, encoded: bytes) -> None:
     """Catch off-by-one or non-canonical MQTT remaining-length encodings."""
     assert encode_remaining_length(value) == encoded
 
@@ -143,9 +136,7 @@ def test_streaming_decoder_handles_multiple_packets_and_split_packet() -> None:
     """Catch decoder state loss between WebSocket frames or adjacent packets."""
     decoder = MqttPacketDecoder()
 
-    assert decoder.feed(b"\xd0\x00\x20") == [
-        MqttPacket(packet_type=PacketType.PINGRESP, flags=0)
-    ]
+    assert decoder.feed(b"\xd0\x00\x20") == [MqttPacket(packet_type=PacketType.PINGRESP, flags=0)]
     assert decoder.feed(b"\x02\x00\x00\xd0\x00") == [
         MqttPacket(
             packet_type=PacketType.CONNACK,

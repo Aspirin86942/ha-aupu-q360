@@ -51,9 +51,7 @@ def direct_step(
 
 
 def _token() -> str:
-    payload = json.dumps(
-        {"exp": int((datetime.now(UTC) + timedelta(days=2)).timestamp())}
-    ).encode()
+    payload = json.dumps({"exp": int((datetime.now(UTC) + timedelta(days=2)).timestamp())}).encode()
     encoded = base64.urlsafe_b64encode(payload).decode().rstrip("=")
     return f"e30.{encoded}.tailABCD"
 
@@ -275,9 +273,7 @@ async def test_connect_subscribe_get_ping_shadow_and_disconnect_in_order() -> No
     await _wait_until(lambda: sleep.delays == [30])
     assert sleep.delays == [30]
 
-    websocket.queue_binary(
-        encode_publish(UPDATE_ACCEPTED, b"synthetic-shadow")
-    )
+    websocket.queue_binary(encode_publish(UPDATE_ACCEPTED, b"synthetic-shadow"))
     await _wait_until(lambda: bool(updates))
     assert updates == [LightShadowUpdate(False, True, "reported")]
 
@@ -303,9 +299,7 @@ async def test_retry_refetches_credentials_with_capped_backoff_and_stop_cancels_
 
     await client.async_start()
     for expected_calls in range(1, 7):
-        await _wait_until(
-            lambda expected_calls=expected_calls: len(sleep.delays) == expected_calls
-        )
+        await _wait_until(lambda expected_calls=expected_calls: len(sleep.delays) == expected_calls)
         if expected_calls < 6:
             await sleep.release_next()
 
@@ -332,9 +326,7 @@ async def test_suback_success_resets_accumulated_backoff_before_get_send() -> No
 
     await client.async_start()
     for expected_calls in range(1, 6):
-        await _wait_until(
-            lambda expected_calls=expected_calls: len(sleep.delays) == expected_calls
-        )
+        await _wait_until(lambda expected_calls=expected_calls: len(sleep.delays) == expected_calls)
         await sleep.release_next()
     await _wait_until(lambda: len(sleep.delays) == 6)
 
@@ -347,9 +339,7 @@ async def test_suback_success_resets_accumulated_backoff_before_get_send() -> No
 @direct_step
 async def test_ping_send_failure_cancels_receive_and_reconnects() -> None:
     """Catch a failed keepalive leaving the receive loop blocked forever."""
-    websocket = FakeWebSocket(
-        ping_failure=aiohttp.ClientConnectionError("synthetic ping failure")
-    )
+    websocket = FakeWebSocket(ping_failure=aiohttp.ClientConnectionError("synthetic ping failure"))
     first_suback = b"\x90\x03\x00\x01\x00"
     websocket.queue_binary(b"\x20\x02\x00\x00" + first_suback)
     websocket.queue_binary(b"\x90\x03\x00\x02\x00")
@@ -458,9 +448,7 @@ async def test_stop_cancels_receive_and_ping_without_background_task_leak() -> N
     await client.async_stop()
     await asyncio.sleep(0)
 
-    after = {
-        task for task in asyncio.all_tasks() if task is not current and not task.done()
-    }
+    after = {task for task in asyncio.all_tasks() if task is not current and not task.done()}
     assert after <= before
     assert websocket.sent[-1] == b"\xe0\x00"
     assert websocket.close_calls == 1
@@ -565,10 +553,7 @@ async def test_unclassified_runner_failure_emits_one_fixed_redacted_log(
     await client.async_start()
     await _wait_until(lambda: not client.is_running)
     await _wait_until(
-        lambda: any(
-            record.name == "custom_components.aupu_q360.wss"
-            for record in caplog.records
-        )
+        lambda: any(record.name == "custom_components.aupu_q360.wss" for record in caplog.records)
     )
 
     messages = [

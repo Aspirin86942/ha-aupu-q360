@@ -131,9 +131,7 @@ def test_light_bodies_only_differ_at_confirmed_boolean(device: DeviceConfig) -> 
     assert on_body["topicName"] == "$aws/things/123456789/shadow/update"
     assert on_body["sendBody"]["state"]["desired"][device.did]["2"]["properties"]["1"] is True
     assert off_body["sendBody"]["state"]["desired"][device.did]["2"]["properties"]["1"] is False
-    assert _json_diff(on_body, off_body) == {
-        f"sendBody.state.desired.{device.did}.2.properties.1"
-    }
+    assert _json_diff(on_body, off_body) == {f"sendBody.state.desired.{device.did}.2.properties.1"}
 
 
 def test_wss_credentials_use_one_fresh_signed_bearer_post(
@@ -202,9 +200,7 @@ def test_wss_credentials_reject_malformed_result_without_echoing_it(
     result: object, device: DeviceConfig, credential: BearerCredential
 ) -> None:
     """Catch damaged or attacker-controlled credential payloads escaping validation."""
-    session = _Session(
-        [_Response(200, {"status": 0, "result": result, "timestamp": 1})]
-    )
+    session = _Session([_Response(200, {"status": 0, "result": result, "timestamp": 1})])
     client = _client(session, _Signer(), credential, device)
 
     with pytest.raises(AupuProtocolError) as raised:
@@ -404,9 +400,7 @@ def test_sms_request_and_phone_login_use_fresh_signatures_without_bearer(
     _run(client.request_sms_code(phone="13800000000"))
     login = _run(client.login_by_phone(phone="13800000000", code="123456"))
 
-    assert login == PhoneLoginResult(
-        token="synthetic.new.token", user_uuid="synthetic-user-uuid"
-    )
+    assert login == PhoneLoginResult(token="synthetic.new.token", user_uuid="synthetic-user-uuid")
     assert signer.call_count == 2
     assert session.calls[0]["method"] == "GET"
     assert session.calls[0]["url"].endswith("/authserver/auth/user/terminal/smscode")
@@ -445,6 +439,8 @@ def test_phone_login_rejects_incomplete_response_without_echoing_it(
     session = _Session([_Response(200, {"status": 0, "result": result, "timestamp": 10})])
 
     with pytest.raises(AupuProtocolError) as raised:
-        _run(_client(session, _Signer(), credential, device).login_by_phone("13800000000", "123456"))
+        _run(
+            _client(session, _Signer(), credential, device).login_by_phone("13800000000", "123456")
+        )
 
     assert "synthetic.new.token" not in str(raised.value)

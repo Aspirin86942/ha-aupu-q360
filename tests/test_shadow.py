@@ -100,9 +100,7 @@ def test_invalid_target_shadow_payload_raises_fixed_protocol_error(payload: byte
 def test_non_standard_json_constants_raise_fixed_protocol_error(constant: bytes) -> None:
     """Catch JSON parser acceptance of non-standard constants outside target state."""
     payload = (
-        b'{"extra":'
-        + constant
-        + b',"state":{"reported":{"123":{"2":{"properties":{"1":true}}}}}}'
+        b'{"extra":' + constant + b',"state":{"reported":{"123":{"2":{"properties":{"1":true}}}}}}'
     )
 
     with pytest.raises(AupuProtocolError) as raised:

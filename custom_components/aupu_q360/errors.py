@@ -19,8 +19,7 @@ class AupuError(Exception):
     def __repr__(self) -> str:
         """Provide safe diagnostics without incorporating exception context."""
         return (
-            f"{type(self).__name__}(error_code={self.error_code!r}, "
-            f"retryable={self.retryable!r})"
+            f"{type(self).__name__}(error_code={self.error_code!r}, retryable={self.retryable!r})"
         )
 
 

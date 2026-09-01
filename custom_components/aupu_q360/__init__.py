@@ -19,9 +19,7 @@ _PLATFORMS = (Platform.LIGHT,)
 _LOGGER = logging.getLogger(__name__)
 
 
-async def _async_reload_entry(
-    hass: HomeAssistant, entry: ConfigEntry[AupuRuntimeData]
-) -> None:
+async def _async_reload_entry(hass: HomeAssistant, entry: ConfigEntry[AupuRuntimeData]) -> None:
     """Rebuild runtime objects after Config Entry data changes."""
     await hass.config_entries.async_reload(entry.entry_id)
 
@@ -61,9 +59,7 @@ async def _async_teardown_runtime(entry: ConfigEntry[AupuRuntimeData]) -> None:
         raise pending_control
 
 
-async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry[AupuRuntimeData]
-) -> bool:
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry[AupuRuntimeData]) -> bool:
     """Build non-serializable runtime objects and forward the light platform."""
     config = AupuConfigEntryData.from_mapping(
         entry.data,
@@ -110,9 +106,7 @@ async def async_setup_entry(
     return True
 
 
-async def async_unload_entry(
-    hass: HomeAssistant, entry: ConfigEntry[AupuRuntimeData]
-) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry[AupuRuntimeData]) -> bool:
     """Unload entities, then stop and release runtime-owned background work."""
     if not await hass.config_entries.async_unload_platforms(entry, _PLATFORMS):
         return False

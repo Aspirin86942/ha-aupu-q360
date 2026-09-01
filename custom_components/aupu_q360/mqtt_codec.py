@@ -73,7 +73,11 @@ class MqttPacketDecoder:
 
 def encode_remaining_length(value: int) -> bytes:
     """Encode a canonical MQTT base-128 Remaining Length value."""
-    if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= _MAX_REMAINING_LENGTH:
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or not 0 <= value <= _MAX_REMAINING_LENGTH
+    ):
         raise AupuProtocolError
     encoded = bytearray()
     remaining = value
@@ -89,7 +93,11 @@ def encode_remaining_length(value: int) -> bytes:
 
 def encode_connect(client_id: str, *, keep_alive: int = 30) -> bytes:
     """Encode the required MQTT 3.1.1 Clean Session CONNECT packet."""
-    if not isinstance(keep_alive, int) or isinstance(keep_alive, bool) or not 0 <= keep_alive <= 65_535:
+    if (
+        not isinstance(keep_alive, int)
+        or isinstance(keep_alive, bool)
+        or not 0 <= keep_alive <= 65_535
+    ):
         raise AupuProtocolError
     body = b"\x00\x04MQTT\x04\x02" + keep_alive.to_bytes(2, "big") + _encode_utf8(client_id)
     return b"\x10" + encode_remaining_length(len(body)) + body

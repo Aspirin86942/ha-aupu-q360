@@ -89,6 +89,7 @@ class SignerSecrets:
         )
         return f"{type(self).__name__}({field_lengths})"
 
+
 class AppAuthorizationSigner:
     """Generate and inspect an App-Authorization header without network I/O."""
 
