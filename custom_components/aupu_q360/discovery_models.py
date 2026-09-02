@@ -33,13 +33,108 @@ class DiscoveryState(StrEnum):
     """Internal state machine states that never contain user input."""
 
     IDLE = "idle"
+    ARCHIVE_OPENING = "archive_opening"
+    SESSION_BASELINING = "session_baselining"
     BASELINING = "baselining"
     READY = "ready"
     STEP_BASELINING = "step_baselining"
+    AWAITING_OPERATOR = "awaiting_operator"
+    RESTORE_REQUIRED = "restore_required"
     OBSERVING = "observing"
     STEP_FINALIZING = "step_finalizing"
     FINALIZING = "finalizing"
     CANCELLED = "cancelled"
+
+
+class DiscoveryExperiment(StrEnum):
+    """Controlled v2 panel experiment labels."""
+
+    AI_THERMOSTATIC_WARMTH = "ai_thermostatic_warmth"
+    DEODORIZATION_STERILIZATION = "deodorization_sterilization"
+    VENTILATION = "ventilation"
+    AIR_BLOWING = "air_blowing"
+    NORMAL_DRYING = "normal_drying"
+    THERMOSTATIC_DRYING = "thermostatic_drying"
+    NIGHT_LIGHT = "night_light"
+    GLOBAL_FAN_LEVEL = "global_fan_level"
+    AI_TARGET_TEMPERATURE = "ai_target_temperature"
+    IDLE_ENVIRONMENT = "idle_environment"
+
+
+class ExperimentKind(StrEnum):
+    """Fixed workflow family for one discovery experiment."""
+
+    MODE = "mode"
+    PARAMETER = "parameter"
+    IDLE = "idle"
+
+
+class DiscoveryPhase(StrEnum):
+    """Controlled evidence phases used by the v2 state machine."""
+
+    SESSION_BASELINE = "session_baseline"
+    STEP_BASELINE = "step_baseline"
+    MODE_ON = "mode_on"
+    MODE_RESTORE = "mode_restore"
+    CARRIER_ON = "carrier_on"
+    PARAMETER_CHANGE = "parameter_change"
+    PARAMETER_RESTORE = "parameter_restore"
+    CARRIER_OFF = "carrier_off"
+    IDLE_OBSERVATION = "idle_observation"
+
+
+class DiscoveryCoverage(StrEnum):
+    """Coverage state for one fixed experiment."""
+
+    NOT_STARTED = "not_started"
+    PARTIAL = "partial"
+    COMPLETE = "complete"
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoveryStepRequest:
+    """One validated, secret-free v2 experiment cycle request."""
+
+    experiment: DiscoveryExperiment
+    round: DiscoveryRound
+    source_level: int | None = None
+    target_level: int | None = None
+    source_temperature: int | None = None
+    target_temperature: int | None = None
+
+    @property
+    def cycle_id(self) -> str:
+        """Return the stable controlled identifier for this cycle."""
+        values = [self.experiment.value]
+        if self.experiment is DiscoveryExperiment.GLOBAL_FAN_LEVEL:
+            values.extend((str(self.source_level), str(self.target_level)))
+        elif self.experiment is DiscoveryExperiment.AI_TARGET_TEMPERATURE:
+            values.extend((str(self.source_temperature), str(self.target_temperature)))
+        values.append(str(self.round))
+        return ":".join(values)
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoveryProgress:
+    """Fixed public progress returned by v2 discovery actions."""
+
+    state: DiscoveryState
+    message_code: str
+    phase: DiscoveryPhase | None = None
+    completed_cycle_count: int = 0
+    manual_restore_required: bool = False
+
+    def to_response(self) -> JsonObject:
+        """Serialize only the fixed action-response surface."""
+        response: JsonObject = {
+            "state": self.state.value,
+            "message_code": self.message_code,
+            "completed_cycle_count": self.completed_cycle_count,
+            "manual_restore_required": self.manual_restore_required,
+        }
+        if self.phase is not None:
+            response["phase"] = self.phase.value
+        return response
 
 
 class DiscoveryCapability(StrEnum):
