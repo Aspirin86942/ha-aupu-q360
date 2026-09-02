@@ -36,7 +36,7 @@
 - 修改 `tests/ha_runtime/test_ha_runtime.py`：用真实 HA manager 验证两个实体和卸载。
 - 修改 `README.md`：说明状态来源、stale、最后确认时间和连续连接语义。
 
-## 任务 1：实现可信状态模型和灯实体投影
+## Task 1：实现可信状态模型和灯实体投影
 
 **文件：**
 
@@ -190,7 +190,7 @@ git diff --cached --check
 git commit -m "feat: 记录 Q360 状态可信度"
 ```
 
-## 任务 2：添加持续状态通道二进制传感器
+## Task 2：添加持续状态通道二进制传感器
 
 **文件：**
 
@@ -410,7 +410,7 @@ git diff --cached --check
 git commit -m "feat: 添加 Q360 状态通道传感器"
 ```
 
-## 任务 3：完成真实 HA runtime、文档和全量验收
+## Task 3：完成真实 HA runtime、文档和全量验收
 
 **文件：**
 
