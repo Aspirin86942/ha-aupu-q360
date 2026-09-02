@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import subprocess
 from collections.abc import Coroutine, Generator
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
@@ -16,6 +18,7 @@ import pytest
 from custom_components.aupu_q360.auth import BearerCredential
 from custom_components.aupu_q360.coordinator import AupuCoordinator
 from custom_components.aupu_q360.diagnostics import async_get_config_entry_diagnostics
+from custom_components.aupu_q360.raw_discovery_archive import RawArchiveMetadata
 from custom_components.aupu_q360.shadow import LightShadowUpdate
 from scripts import check_no_secrets
 
@@ -227,6 +230,14 @@ def test_diagnostics_include_only_the_validated_latest_discovery_report(
         integration_version="0.1.1",
         started_at=datetime(2026, 9, 2, 13, 47, tzinfo=UTC),
         wss_baseline_succeeded=True,
+        archive=RawArchiveMetadata(
+            enabled=True,
+            status="complete",
+            session_id="rd-" + "a" * 32,
+            event_count=12,
+            file_bytes=3456,
+            sha256="b" * 64,
+        ),
         cycles=(),
     )
 
@@ -240,8 +251,13 @@ def test_diagnostics_include_only_the_validated_latest_discovery_report(
         use_wss=True,
         coordinator=SimpleNamespace(),
         discovery_store=FakeReportStore(),
+        device=SimpleNamespace(did="123456789012345", tag="synthetic-device-tag"),
     )
-    entry = SimpleNamespace(runtime_data=runtime, data={"secret": sentinel})
+    entry = SimpleNamespace(
+        runtime_data=runtime,
+        data={"secret": sentinel},
+        entry_id="synthetic-entry-id",
+    )
     monkeypatch.setattr("custom_components.aupu_q360.diagnostics._utcnow", lambda: _NOW)
 
     result = _run(async_get_config_entry_diagnostics(None, cast(Any, entry)))
@@ -250,7 +266,68 @@ def test_diagnostics_include_only_the_validated_latest_discovery_report(
         "report_available": True,
         "report": report,
     }
+    assert result["state_discovery"]["report"]["raw_archive"] == {
+        "enabled": True,
+        "status": "complete",
+        "session_id": "rd-" + "a" * 32,
+        "event_count": 12,
+        "file_bytes": 3456,
+        "sha256": "b" * 64,
+    }
     assert sentinel not in json.dumps(result)
+    assert "/var/lib/" not in json.dumps(result)
+    assert "/home/george/" not in json.dumps(result)
+
+
+def test_diagnostics_revalidate_fake_store_and_hide_raw_markers(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Catch an invalid Store bypass injecting topics, payloads, paths, or identifiers."""
+    from custom_components.aupu_q360.discovery_analysis import build_discovery_report
+
+    sentinel = "synthetic-private-raw-marker"
+    report = build_discovery_report(
+        integration_version="0.1.1",
+        started_at=datetime(2026, 9, 2, 13, 47, tzinfo=UTC),
+        wss_baseline_succeeded=True,
+        cycles=(),
+    )
+    invalid = deepcopy(report)
+    invalid["raw_archive"] = {
+        "enabled": True,
+        "status": "complete",
+        "session_id": "rd-" + "a" * 32,
+        "event_count": 1,
+        "file_bytes": 1,
+        "sha256": "b" * 64,
+        "path": f"/var/lib/{sentinel}",
+        "topic": "$aws/things/123456789012345/shadow/get/accepted",
+        "payload": sentinel,
+    }
+
+    class InvalidFakeStore:
+        async def async_load(self) -> dict[str, Any]:
+            return invalid
+
+    runtime = SimpleNamespace(
+        credential=_credential(_NOW + timedelta(days=8)),
+        use_wss=True,
+        coordinator=SimpleNamespace(),
+        discovery_store=InvalidFakeStore(),
+        device=SimpleNamespace(did="123456789012345", tag="synthetic-device-tag"),
+    )
+    entry = SimpleNamespace(runtime_data=runtime, entry_id="synthetic-entry-id")
+
+    with caplog.at_level(logging.ERROR, logger="custom_components.aupu_q360.diagnostics"):
+        result = _run(async_get_config_entry_diagnostics(None, cast(Any, entry)))
+
+    assert result["state_discovery"] == {"report_available": False}
+    serialized = json.dumps(result)
+    assert sentinel not in serialized
+    assert "$aws/things/" not in serialized
+    assert "AUPU discovery diagnostics report rejected" in caplog.text
+    assert sentinel not in caplog.text
+    assert "$aws/things/" not in caplog.text
 
 
 def test_diagnostics_downgrade_report_load_failure_without_exception_text() -> None:

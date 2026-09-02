@@ -12,7 +12,8 @@ from .discovery_models import JsonObject
 
 _LOGGER = logging.getLogger(__name__)
 _STORAGE_VERSION = 1
-_STORAGE_PREFIX = "aupu_q360.discovery"
+_STORAGE_PREFIX_V2 = "aupu_q360.discovery_v2"
+_STORAGE_PREFIX_LEGACY = "aupu_q360.discovery"
 
 ReportValidator = Callable[[object], object]
 
@@ -37,7 +38,7 @@ class DiscoveryReportStore:
         self._store: Store[JsonObject] = Store(
             hass,
             _STORAGE_VERSION,
-            _storage_key(entry_id),
+            _storage_key_v2(entry_id),
             private=True,
             atomic_writes=True,
         )
@@ -77,20 +78,31 @@ class DiscoveryReportStore:
         hass: HomeAssistant,
         entry_id: str,
     ) -> None:
-        """Remove one entry key without loading credentials or report content."""
-        store: Store[JsonObject] = Store(
-            hass,
-            _STORAGE_VERSION,
-            _storage_key(entry_id),
-            private=True,
-            atomic_writes=True,
+        """Remove the exact v2 and legacy keys without loading either report."""
+        stores: tuple[Store[JsonObject], ...] = tuple(
+            Store(
+                hass,
+                _STORAGE_VERSION,
+                key,
+                private=True,
+                atomic_writes=True,
+            )
+            for key in (_storage_key_v2(entry_id), _storage_key_legacy(entry_id))
         )
-        try:
-            await store.async_remove()
-        except Exception:  # noqa: BLE001 - expose only the fixed storage error
-            _LOGGER.error("AUPU discovery report storage failed")
-            raise DiscoveryReportStoreError from None
+        failed = False
+        for store in stores:
+            try:
+                await store.async_remove()
+            except Exception:  # noqa: BLE001 - attempt both exact keys with fixed text
+                failed = True
+                _LOGGER.error("AUPU discovery report storage failed")
+        if failed:
+            raise DiscoveryReportStoreError
 
 
-def _storage_key(entry_id: str) -> str:
-    return f"{_STORAGE_PREFIX}.{entry_id}"
+def _storage_key_v2(entry_id: str) -> str:
+    return f"{_STORAGE_PREFIX_V2}.{entry_id}"
+
+
+def _storage_key_legacy(entry_id: str) -> str:
+    return f"{_STORAGE_PREFIX_LEGACY}.{entry_id}"
