@@ -329,13 +329,15 @@ def test_report_scan_rejects_sensitive_markers_without_echoing_findings() -> Non
 def test_report_scan_accepts_controlled_sanitized_content() -> None:
     """Catch final scanning rejecting the report's fixed public vocabulary."""
     from custom_components.aupu_q360.discovery_analysis import build_discovery_report
+    from custom_components.aupu_q360.raw_discovery_archive import RawArchiveMetadata
 
     result = _module().validate_discovery_report(
         build_discovery_report(
-            integration_version="0.1.1",
+            integration_version="0.2.0",
             started_at=datetime(2026, 9, 2, 13, 47, tzinfo=UTC),
             wss_baseline_succeeded=True,
-            steps=(),
+            archive=RawArchiveMetadata.not_requested(),
+            cycles=(),
         ),
         forbidden_values=("123456789012345", "synthetic-entry-id"),
     )
@@ -348,16 +350,19 @@ def test_report_scan_accepts_controlled_sanitized_content() -> None:
     "mutation",
     [
         lambda report: report.update({"extra": True}),
-        lambda report: report.update({"schema_version": 2}),
-        lambda report: report["limits"].update({"step_timeout_seconds": 121}),
-        lambda report: report["statistics"].update({"invalid_steps": -1}),
+        lambda report: report.update({"schema_version": 1}),
+        lambda report: report["limits"].update({"stage_timeout_seconds": 121}),
+        lambda report: report["statistics"].update({"invalid_cycles": -1}),
         lambda report: report["candidates"].append(
             {
-                "capability": "unknown",
+                "experiment": "unknown",
+                "role": "mode",
                 "path": "service/2/property/1",
                 "data_type": "boolean",
                 "classification": "confirmed_candidate",
-                "evidence_steps": [],
+                "association": "dedicated",
+                "value_mappings": [],
+                "evidence_cycles": [],
             }
         ),
     ],
@@ -365,13 +370,15 @@ def test_report_scan_accepts_controlled_sanitized_content() -> None:
 def test_report_scan_rejects_non_fixed_schema(mutation) -> None:  # type: ignore[no-untyped-def]
     """Catch storage accepting arbitrary JSON merely because it has no obvious secret."""
     from custom_components.aupu_q360.discovery_analysis import build_discovery_report
+    from custom_components.aupu_q360.raw_discovery_archive import RawArchiveMetadata
 
     module = _module()
     report = build_discovery_report(
-        integration_version="0.1.1",
+        integration_version="0.2.0",
         started_at=datetime(2026, 9, 2, 13, 47, tzinfo=UTC),
         wss_baseline_succeeded=True,
-        steps=(),
+        archive=RawArchiveMetadata.not_requested(),
+        cycles=(),
     )
     mutation(report)
 

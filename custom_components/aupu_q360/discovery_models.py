@@ -248,6 +248,98 @@ class SanitizedChange:
 
 
 @dataclass(frozen=True, slots=True)
+class PathRestoration:
+    """One path-level restoration result without retaining compared values."""
+
+    path: str
+    restored: bool
+
+    def to_public(self) -> JsonObject:
+        """Serialize only the aliased path and restoration boolean."""
+        return {"path": self.path, "restored": self.restored}
+
+
+@dataclass(frozen=True, slots=True)
+class PhaseEvidence:
+    """Bounded sanitized evidence for one v2 experiment phase attempt."""
+
+    phase: DiscoveryPhase
+    attempt: int
+    snapshot_succeeded: bool
+    changes: tuple[SanitizedChange, ...]
+    restorations: tuple[PathRestoration, ...] = ()
+    invalid: bool = False
+    timed_out: bool = False
+
+    def to_public(self) -> JsonObject:
+        """Serialize controlled phase data and sanitized evidence only."""
+        return {
+            "phase": self.phase.value,
+            "attempt": self.attempt,
+            "snapshot_succeeded": self.snapshot_succeeded,
+            "invalid": self.invalid,
+            "timed_out": self.timed_out,
+            "changes": [change.to_public() for change in self.changes],
+            "restorations": [
+                restoration.to_public()
+                for restoration in sorted(self.restorations, key=lambda item: item.path)
+            ],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CycleEvidence:
+    """All sanitized phase evidence retained for one controlled experiment cycle."""
+
+    request: DiscoveryStepRequest
+    phases: tuple[PhaseEvidence, ...]
+    completed: bool = True
+    invalid: bool = False
+
+    @property
+    def timed_out(self) -> bool:
+        """Return whether any phase timed out."""
+        return any(phase.timed_out for phase in self.phases)
+
+    @property
+    def restoration_failure_count(self) -> int:
+        """Count path restoration checks that did not recover their references."""
+        return sum(
+            not restoration.restored for phase in self.phases for restoration in phase.restorations
+        )
+
+    def to_public(self) -> JsonObject:
+        """Serialize one stable cycle row without in-memory comparison values."""
+        public: JsonObject = {
+            "cycle_id": self.request.cycle_id,
+            "experiment": self.request.experiment.value,
+            "round": self.request.round,
+            "completed": self.completed,
+            "invalid": self.invalid,
+            "phases": [phase.to_public() for phase in self.phases],
+        }
+        for key, value in (
+            ("source_level", self.request.source_level),
+            ("target_level", self.request.target_level),
+            ("source_temperature", self.request.source_temperature),
+            ("target_temperature", self.request.target_temperature),
+        ):
+            if value is not None:
+                public[key] = value
+        return public
+
+
+@dataclass(frozen=True, slots=True)
+class RestorationResult:
+    """In-memory result of one path-level restoration evaluation."""
+
+    restorations: tuple[PathRestoration, ...]
+    restored_paths: frozenset[str]
+    unrestored_paths: frozenset[str]
+    required: bool
+
+
+@dataclass(frozen=True, slots=True)
 class StepEvidence:
     """Bounded, sanitized evidence retained after one experiment step."""
 
