@@ -11,7 +11,7 @@ from homeassistant.core import HomeAssistant
 from .auth import BearerCredential
 from .models import AupuRuntimeData
 
-_INTEGRATION_VERSION = "0.1.0"
+_INTEGRATION_VERSION = "0.1.1"
 _ONE_DAY = timedelta(days=1)
 _SEVEN_DAYS = timedelta(days=7)
 _ERROR_CODES = frozenset(

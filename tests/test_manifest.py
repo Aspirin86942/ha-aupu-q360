@@ -13,7 +13,7 @@ import yaml
 
 DOMAIN = "aupu_q360"
 NAME = "AUPU Q360"
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 REPOSITORY_URL = "https://github.com/Aspirin86942/ha-aupu-q360"
 
 

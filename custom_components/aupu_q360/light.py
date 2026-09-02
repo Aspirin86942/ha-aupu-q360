@@ -53,6 +53,7 @@ class AupuLight(LightEntity):
         self._remove_listener: Callable[[], None] | None = None
         self._attr_unique_id = unique_id
         self._attr_supported_color_modes = {ColorMode.ONOFF}
+        self._attr_color_mode = ColorMode.ONOFF
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry_id)},
             manufacturer="AUPU",

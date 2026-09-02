@@ -159,6 +159,19 @@ def test_entity_turn_on_and_off_send_one_boolean_and_publish_assumed_state(
     assert entity.assumed_state is True
 
 
+def test_onoff_entity_reports_current_color_mode(issues: IssueRecorder) -> None:
+    """Catch HA rejecting service calls when the current color mode is missing."""
+    del issues
+    entity = AupuLight(
+        coordinator=_coordinator(FakeApi()),
+        entry_id="synthetic-entry",
+        unique_id="9f4e70f00edb76c1b3d8",
+    )
+
+    assert entity.supported_color_modes == {ColorMode.ONOFF}
+    assert entity.color_mode is ColorMode.ONOFF
+
+
 def test_api_failure_is_visible_and_keeps_previous_entity_state(
     issues: IssueRecorder,
 ) -> None:
