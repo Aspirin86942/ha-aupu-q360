@@ -13,11 +13,13 @@ from typing import Any, cast
 import pytest
 from homeassistant.components.binary_sensor import BinarySensorDeviceClass
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 
 from custom_components.aupu_q360.api import AupuApiClient
 from custom_components.aupu_q360.auth import BearerCredential
 from custom_components.aupu_q360.binary_sensor import AupuStateChannelBinarySensor
 from custom_components.aupu_q360.binary_sensor import async_setup_entry as async_setup_binary_sensor
+from custom_components.aupu_q360.const import DOMAIN
 from custom_components.aupu_q360.coordinator import AupuCoordinator
 from custom_components.aupu_q360.light import AupuLight
 
@@ -72,7 +74,9 @@ class RecordingStateChannel(AupuStateChannelBinarySensor):
         self.writes += 1
 
 
-def test_wss_setup_exposes_connectivity_state_and_https_only_adds_nothing() -> None:
+def test_wss_setup_exposes_connectivity_state_and_https_only_adds_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Catch exposing a state channel without WSS or leaking device-private identifiers."""
     coordinator = _coordinator()
     wss_entities: list[AupuStateChannelBinarySensor] = []
@@ -123,6 +127,8 @@ def test_wss_setup_exposes_connectivity_state_and_https_only_adds_nothing() -> N
     assert entity.is_on is False
     assert entity.extra_state_attributes["state_stale"] is True
 
+    registry = SimpleNamespace(async_get_entity_id=lambda *args: None)
+    monkeypatch.setattr(er, "async_get", lambda hass: registry)
     _run(
         async_setup_binary_sensor(
             cast(HomeAssistant, object()), https_only_entry, add_https_entities
@@ -130,6 +136,47 @@ def test_wss_setup_exposes_connectivity_state_and_https_only_adds_nothing() -> N
     )
 
     assert https_entities == []
+
+
+def test_https_only_setup_removes_prior_state_channel_registry_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch a WSS-to-HTTPS migration leaving its registered channel entity behind."""
+    coordinator = _coordinator()
+    lookups: list[tuple[str, str, str]] = []
+    registry_removed: list[str] = []
+    state_removed: list[str] = []
+
+    class FakeRegistry:
+        def async_get_entity_id(self, domain: str, platform: str, unique_id: str) -> str:
+            lookups.append((domain, platform, unique_id))
+            return "binary_sensor.aupu_q360_state_channel"
+
+        def async_remove(self, entity_id: str) -> None:
+            registry_removed.append(entity_id)
+
+    registry = FakeRegistry()
+    monkeypatch.setattr(er, "async_get", lambda hass: registry)
+    hass = SimpleNamespace(states=SimpleNamespace(async_remove=state_removed.append))
+    entry = SimpleNamespace(
+        entry_id="synthetic-entry",
+        unique_id="synthetic-unique-id",
+        runtime_data=SimpleNamespace(use_wss=False, coordinator=coordinator),
+    )
+    entities: list[AupuStateChannelBinarySensor] = []
+
+    _run(
+        async_setup_binary_sensor(
+            cast(HomeAssistant, hass),
+            entry,
+            entities.extend,
+        )
+    )
+
+    assert entities == []
+    assert lookups == [("binary_sensor", DOMAIN, "synthetic-unique-id_state_channel")]
+    assert registry_removed == ["binary_sensor.aupu_q360_state_channel"]
+    assert state_removed == ["binary_sensor.aupu_q360_state_channel"]
 
 
 def test_state_channel_listener_is_removed_once_and_stops_writes() -> None:

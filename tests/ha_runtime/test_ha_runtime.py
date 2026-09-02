@@ -14,10 +14,12 @@ from typing import Any
 import aiohttp
 import pytest
 from homeassistant.config_entries import SOURCE_REAUTH, SOURCE_USER, ConfigEntry
+from homeassistant.const import STATE_UNAVAILABLE
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.restore_state import ATTR_RESTORED
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.aupu_q360.api import AupuApiClient, WssCredentials
@@ -413,10 +415,94 @@ async def test_real_entry_manager_starts_and_stops_fake_wss_without_task_leak(
     assert stale_channel_state.attributes["last_confirmed_at"] == confirmed_at
 
     await _unload(hass, entry)
-    assert hass.states.get(light.entity_id) is None
-    assert hass.states.get(channel.entity_id) is None
+    unloaded_light_state = hass.states.get(light.entity_id)
+    unloaded_channel_state = hass.states.get(channel.entity_id)
+    assert unloaded_light_state is not None
+    assert unloaded_light_state.state == STATE_UNAVAILABLE
+    assert unloaded_light_state.attributes[ATTR_RESTORED] is True
+    assert unloaded_channel_state is not None
+    assert unloaded_channel_state.state == STATE_UNAVAILABLE
+    assert unloaded_channel_state.attributes[ATTR_RESTORED] is True
     await asyncio.sleep(0)
     after = {task for task in asyncio.all_tasks() if task is not current and not task.done()}
     assert after <= before
     assert websocket.sent[-1] == b"\xe0\x00"
     assert websocket.close_calls == 1
+
+
+async def test_real_entry_manager_wss_to_https_only_removes_state_channel(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch a real mode reload leaving the prior channel registry or state behind."""
+    websocket = _FakeWebSocket()
+    session = _FakeSession(websocket)
+    sleep = _ControlledSleep()
+    original_init = AupuShadowWebSocket.__init__
+
+    def init_with_fake_sleep(
+        client: AupuShadowWebSocket,
+        *args: object,
+        **kwargs: object,
+    ) -> None:
+        kwargs["sleep"] = sleep
+        original_init(client, *args, **kwargs)
+
+    async def fake_get_wss_credentials(self: AupuApiClient) -> WssCredentials:
+        del self
+        return WssCredentials(
+            authorizer_name="synthetic-authorizer",
+            signature="synthetic-signature-1",
+            token_key_name="synthetic-token-key",
+        )
+
+    monkeypatch.setattr(AupuShadowWebSocket, "__init__", init_with_fake_sleep)
+    monkeypatch.setattr(AupuApiClient, "get_wss_credentials", fake_get_wss_credentials)
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.async_get_clientsession",
+        lambda _: session,
+    )
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="AUPU Q360",
+        unique_id="synthetic-mode-entry",
+        data=_entry_data(
+            token=_jwt(expires_in=7 * 24 * 60 * 60, subject="synthetic-mode"),
+            use_wss=True,
+            user_uuid="synthetic-user-uuid",
+        ),
+    )
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await websocket.receive_started.wait()
+    await _wait_until(lambda: sleep.delays == [30])
+    registry = er.async_get(hass)
+    entities = er.async_entries_for_config_entry(registry, entry.entry_id)
+    assert sorted(entity.domain for entity in entities) == ["binary_sensor", "light"]
+    channel = next(entity for entity in entities if entity.domain == "binary_sensor")
+    light = next(entity for entity in entities if entity.domain == "light")
+    assert hass.states.get(channel.entity_id) is not None
+    assert hass.states.get(light.entity_id) is not None
+
+    https_only_data = dict(entry.data)
+    https_only_data["use_wss"] = False
+    assert hass.config_entries.async_update_entry(entry, data=https_only_data)
+    await hass.async_block_till_done()
+
+    remaining = er.async_entries_for_config_entry(registry, entry.entry_id)
+    assert [entity.entity_id for entity in remaining] == [light.entity_id]
+    assert registry.async_get(channel.entity_id) is None
+    assert hass.states.get(channel.entity_id) is None
+    assert registry.async_get(light.entity_id) is not None
+    assert hass.states.get(light.entity_id) is not None
+    running = {
+        task.get_name()
+        for task in asyncio.all_tasks()
+        if not task.done() and task.get_name().startswith("aupu_q360_wss")
+    }
+    assert running == set()
+    assert websocket.sent[-1] == b"\xe0\x00"
+    assert websocket.close_calls == 1
+
+    await _unload(hass, entry)

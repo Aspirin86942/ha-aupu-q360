@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from homeassistant.components.binary_sensor import DOMAIN as BINARY_SENSOR_DOMAIN
 from homeassistant.components.binary_sensor import BinarySensorDeviceClass, BinarySensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
@@ -21,15 +23,20 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Add the state-channel sensor only when the entry uses WSS."""
-    del hass
+    unique_id = f"{entry.unique_id or entry.entry_id}_state_channel"
     if not entry.runtime_data.use_wss:
+        registry = er.async_get(hass)
+        entity_id = registry.async_get_entity_id(BINARY_SENSOR_DOMAIN, DOMAIN, unique_id)
+        if entity_id is not None:
+            registry.async_remove(entity_id)
+            hass.states.async_remove(entity_id)
         return
     async_add_entities(
         [
             AupuStateChannelBinarySensor(
                 coordinator=entry.runtime_data.coordinator,
                 entry_id=entry.entry_id,
-                unique_id=f"{entry.unique_id or entry.entry_id}_state_channel",
+                unique_id=unique_id,
             )
         ]
     )

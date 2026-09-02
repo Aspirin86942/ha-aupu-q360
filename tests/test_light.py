@@ -8,6 +8,7 @@ import json
 from collections.abc import Callable, Coroutine, Generator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -610,6 +611,11 @@ def test_setup_starts_one_coordinator_stopper_and_registers_dual_platforms(
     monkeypatch.setattr(
         "custom_components.aupu_q360.async_get_clientsession",
         lambda _: object(),
+    )
+    registry = SimpleNamespace(async_get_entity_id=lambda *args: None)
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.binary_sensor.er.async_get",
+        lambda _: registry,
     )
 
     assert (
