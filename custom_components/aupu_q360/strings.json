@@ -92,6 +92,13 @@
       "invalid_entry": "The stored configuration is invalid."
     }
   },
+  "entity": {
+    "binary_sensor": {
+      "state_channel": {
+        "name": "State channel"
+      }
+    }
+  },
   "issues": {
     "jwt_expiring": {
       "title": "AUPU token expires soon",

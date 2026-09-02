@@ -15,7 +15,7 @@ from .coordinator import AupuCoordinator
 from .models import AupuConfigEntryData, AupuRuntimeData
 from .signer import AppAuthorizationSigner
 
-_PLATFORMS = (Platform.LIGHT,)
+_PLATFORMS = (Platform.LIGHT, Platform.BINARY_SENSOR)
 _LOGGER = logging.getLogger(__name__)
 
 

@@ -21,6 +21,8 @@ from homeassistant.helpers.issue_registry import IssueSeverity
 from custom_components.aupu_q360 import async_setup_entry, async_unload_entry
 from custom_components.aupu_q360.api import AupuApiClient
 from custom_components.aupu_q360.auth import BearerCredential
+from custom_components.aupu_q360.binary_sensor import AupuStateChannelBinarySensor
+from custom_components.aupu_q360.binary_sensor import async_setup_entry as async_setup_binary_sensor
 from custom_components.aupu_q360.const import DOMAIN
 from custom_components.aupu_q360.coordinator import AupuCoordinator, StateClock
 from custom_components.aupu_q360.errors import AupuAuthError, AupuTemporaryError
@@ -501,7 +503,7 @@ class FakeEntry:
 class FakeConfigEntries:
     def __init__(self) -> None:
         self.hass: FakeHass
-        self.entities: list[AupuLight] = []
+        self.entities: list[AupuLight | AupuStateChannelBinarySensor] = []
         self.forwarded: tuple[Platform, ...] | None = None
         self.unloaded: tuple[Platform, ...] | None = None
 
@@ -512,14 +514,22 @@ class FakeConfigEntries:
     ) -> None:
         self.forwarded = platforms
 
-        def add_entities(entities: list[AupuLight]) -> None:
+        def add_entities(entities: list[AupuLight | AupuStateChannelBinarySensor]) -> None:
             self.entities.extend(entities)
 
-        await async_setup_light(
-            cast(HomeAssistant, self.hass),
-            cast(ConfigEntry[AupuRuntimeData], entry),
-            cast(Any, add_entities),
-        )
+        for platform in platforms:
+            if platform is Platform.LIGHT:
+                await async_setup_light(
+                    cast(HomeAssistant, self.hass),
+                    cast(ConfigEntry[AupuRuntimeData], entry),
+                    cast(Any, add_entities),
+                )
+            elif platform is Platform.BINARY_SENSOR:
+                await async_setup_binary_sensor(
+                    cast(HomeAssistant, self.hass),
+                    cast(ConfigEntry[AupuRuntimeData], entry),
+                    cast(Any, add_entities),
+                )
         for entity in self.entities:
             await entity.async_added_to_hass()
 
@@ -579,11 +589,11 @@ def _persisted_data(
     return result
 
 
-def test_setup_starts_one_coordinator_stopper_and_adds_only_one_light(
+def test_setup_starts_one_coordinator_stopper_and_registers_dual_platforms(
     monkeypatch: pytest.MonkeyPatch,
     issues: IssueRecorder,
 ) -> None:
-    """Catch extra platforms/entities, raw IDs, or coordinator teardown leaks."""
+    """Catch missing state-channel platform registration or coordinator teardown leaks."""
     del issues
     entry = FakeEntry(data=_persisted_data())
     config_entries = FakeConfigEntries()
@@ -614,7 +624,7 @@ def test_setup_starts_one_coordinator_stopper_and_adds_only_one_light(
     assert entry.runtime_data is not None
     coordinator = entry.runtime_data.coordinator
     assert entry.runtime_data.stoppers == [coordinator]
-    assert config_entries.forwarded == (Platform.LIGHT,)
+    assert config_entries.forwarded == (Platform.LIGHT, Platform.BINARY_SENSOR)
     assert len(config_entries.entities) == 1
     entity = config_entries.entities[0]
     assert entity.name == "Q360T5-Pro Light"
@@ -638,7 +648,7 @@ def test_setup_starts_one_coordinator_stopper_and_adds_only_one_light(
         )
         is True
     )
-    assert config_entries.unloaded == (Platform.LIGHT,)
+    assert config_entries.unloaded == (Platform.LIGHT, Platform.BINARY_SENSOR)
     assert stop_calls == 1
     assert "runtime_data" not in entry.__dict__
 
@@ -778,9 +788,13 @@ def test_missing_wss_user_uuid_requests_reauth_without_failing_setup(
     assert len(starts) == 1
     assert starts[0].is_running is False
     assert entry.reauth_calls == 1
-    assert len(config_entries.entities) == 1
-    assert config_entries.entities[0].is_on is None
-    assert config_entries.entities[0].assumed_state is True
+    assert len(config_entries.entities) == 2
+    light, state_channel = config_entries.entities
+    assert isinstance(light, AupuLight)
+    assert isinstance(state_channel, AupuStateChannelBinarySensor)
+    assert state_channel.device_info == light.device_info
+    assert light.is_on is None
+    assert light.assumed_state is True
 
     assert (
         _run(

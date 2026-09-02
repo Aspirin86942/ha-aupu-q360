@@ -92,6 +92,13 @@
       "invalid_entry": "已保存的配置无效。"
     }
   },
+  "entity": {
+    "binary_sensor": {
+      "state_channel": {
+        "name": "状态通道"
+      }
+    }
+  },
   "issues": {
     "jwt_expiring": {
       "title": "奥普 Token 即将过期",

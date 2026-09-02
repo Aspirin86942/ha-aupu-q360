@@ -84,7 +84,7 @@ def test_english_and_simplified_chinese_flow_keys_match(project_root: Path) -> N
     translation = _load_json(project_root / "custom_components/aupu_q360/translations/zh-Hans.json")
 
     assert _key_tree(translation) == _key_tree(strings)
-    assert set(strings) == {"config", "options", "issues"}
+    assert set(strings) == {"config", "options", "issues", "entity"}
     config = strings["config"]
     options = strings["options"]
     assert isinstance(config, dict)
@@ -123,6 +123,8 @@ def test_english_and_simplified_chinese_flow_keys_match(project_root: Path) -> N
         "cannot_connect",
     }
     assert set(options["abort"]) == {"invalid_state", "invalid_entry"}
+    assert strings["entity"]["binary_sensor"]["state_channel"]["name"] == "State channel"
+    assert translation["entity"]["binary_sensor"]["state_channel"]["name"] == "状态通道"
 
 
 def test_readme_documents_safe_offline_install_and_operations(project_root: Path) -> None:
