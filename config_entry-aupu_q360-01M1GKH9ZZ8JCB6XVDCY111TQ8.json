@@ -1,0 +1,77 @@
+{
+  "home_assistant": {
+    "arch": "x86_64",
+    "dev": false,
+    "docker": true,
+    "hassio": false,
+    "installation_type": "Home Assistant Container",
+    "os_name": "Linux",
+    "os_version": "6.1.0-52-amd64",
+    "python_version": "3.14.6",
+    "timezone": "Asia/Shanghai",
+    "version": "2026.8.3",
+    "virtualenv": false,
+    "container_arch": "amd64",
+    "run_as_root": true
+  },
+  "custom_components": {
+    "hacs": {
+      "documentation": "https://hacs.xyz/docs/use/",
+      "version": "2.0.5",
+      "requirements": [
+        "aiogithubapi>=22.10.1"
+      ]
+    },
+    "home_connect_alt": {
+      "documentation": "https://github.com/ekutner/home-connect-hass",
+      "version": "1.4.2",
+      "requirements": [
+        "home-connect-async==0.8.6"
+      ]
+    },
+    "aupu_q360": {
+      "documentation": "https://github.com/Aspirin86942/ha-aupu-q360",
+      "version": "0.1.0",
+      "requirements": []
+    },
+    "xiaomi_home": {
+      "documentation": "https://github.com/XiaoMi/ha_xiaomi_home/blob/main/README.md",
+      "version": "v0.4.7",
+      "requirements": [
+        "construct>=2.10.56",
+        "paho-mqtt",
+        "numpy",
+        "cryptography",
+        "psutil"
+      ]
+    }
+  },
+  "integration_manifest": {
+    "domain": "aupu_q360",
+    "name": "AUPU Q360",
+    "codeowners": [
+      "Aspirin86942"
+    ],
+    "config_flow": true,
+    "documentation": "https://github.com/Aspirin86942/ha-aupu-q360",
+    "integration_type": "device",
+    "iot_class": "cloud_push",
+    "issue_tracker": "https://github.com/Aspirin86942/ha-aupu-q360/issues",
+    "requirements": [],
+    "version": "0.1.0",
+    "is_built_in": false,
+    "overwrites_built_in": false
+  },
+  "setup_times": {},
+  "data": {
+    "integration_version": "0.1.0",
+    "authentication_expiry_bucket": ">=7d",
+    "wss_enabled": true,
+    "wss_connected": false,
+    "wss_healthy": false,
+    "last_error_code": "none",
+    "light_state_source": "command",
+    "assumed_state": true
+  },
+  "issues": []
+}
