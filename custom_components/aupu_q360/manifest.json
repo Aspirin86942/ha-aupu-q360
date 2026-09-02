@@ -1,10 +1,12 @@
 {
   "domain": "aupu_q360",
   "name": "AUPU Q360",
-  "codeowners": [],
+  "codeowners": ["@Aspirin86942"],
   "config_flow": true,
+  "documentation": "https://github.com/Aspirin86942/ha-aupu-q360",
   "integration_type": "device",
   "iot_class": "cloud_push",
+  "issue_tracker": "https://github.com/Aspirin86942/ha-aupu-q360/issues",
   "requirements": [],
   "version": "0.1.0"
 }

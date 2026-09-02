@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import struct
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
@@ -13,6 +14,7 @@ import yaml
 DOMAIN = "aupu_q360"
 NAME = "AUPU Q360"
 VERSION = "0.1.0"
+REPOSITORY_URL = "https://github.com/Aspirin86942/ha-aupu-q360"
 
 
 def _load_json(path: Path) -> dict[str, object]:
@@ -58,8 +60,22 @@ def test_manifest_is_hacs_installable(project_root: Path) -> None:
     assert manifest["iot_class"] == "cloud_push"
     assert manifest["integration_type"] == "device"
     assert manifest["requirements"] == []
-    assert "documentation" not in manifest
-    assert "issue_tracker" not in manifest
+    assert manifest["codeowners"] == ["@Aspirin86942"]
+    assert manifest["documentation"] == REPOSITORY_URL
+    assert manifest["issue_tracker"] == f"{REPOSITORY_URL}/issues"
+    assert hacs == {"name": NAME, "country": "CN"}
+
+
+def test_repository_has_license_and_square_brand_icon(project_root: Path) -> None:
+    """Keep the repository consumable by HACS without relying on remote assets."""
+    license_text = (project_root / "LICENSE").read_text(encoding="utf-8")
+    icon_bytes = (project_root / "custom_components/aupu_q360/brand/icon.png").read_bytes()
+
+    assert "MIT License" in license_text
+    assert icon_bytes.startswith(b"\x89PNG\r\n\x1a\n")
+    width, height = struct.unpack(">II", icon_bytes[16:24])
+    assert width == height
+    assert width >= 256
 
 
 def test_python_floor_and_lock_exclude_obsolete_ha_resolution(project_root: Path) -> None:
@@ -144,7 +160,9 @@ def test_readme_documents_safe_offline_install_and_operations(project_root: Path
     ):
         assert heading in readme
     for required_text in (
-        "你的真实 GitHub 仓库 URL",
+        REPOSITORY_URL,
+        "标准 HACS 自定义仓库安装要求",
+        "仓库可公开访问",
         "重启 Home Assistant",
         "私有签名 JSON",
         "60 秒",
@@ -169,7 +187,7 @@ def test_readme_documents_safe_offline_install_and_operations(project_root: Path
     assert not re.search(r"(?<!不)会自动刷新|将自动刷新|可自动刷新|支持自动刷新", readme)
     assert not re.search(r"\b1[3-9]\d{9}\b", readme)
     assert not re.search(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b", readme)
-    assert not re.search(r"https://github\.com/[^/\s]+/[^/\s]+", readme)
+    assert readme.count(REPOSITORY_URL) >= 2
 
     strings = _load_json(project_root / "custom_components/aupu_q360/strings.json")
     translation = _load_json(project_root / "custom_components/aupu_q360/translations/zh-Hans.json")
@@ -181,10 +199,9 @@ def test_readme_documents_safe_offline_install_and_operations(project_root: Path
     assert "不会启动短信重新认证流程" in chinese_expiring
 
     release_steps = (
-        "发布到真实 GitHub 仓库",
-        "补充真实 `documentation` 与 `issue_tracker`",
+        "确认仓库已公开且可被 HACS 访问",
         "运行 HACS 和 hassfest 验证",
-        "在 HACS 中添加真实仓库 URL",
+        "在 HACS 中添加仓库 URL",
         "重启 Home Assistant",
         "添加集成",
     )
