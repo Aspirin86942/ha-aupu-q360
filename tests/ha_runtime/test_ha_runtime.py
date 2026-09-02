@@ -8,6 +8,7 @@ import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 import aiohttp
@@ -25,6 +26,7 @@ from custom_components.aupu_q360.diagnostics import (
     async_get_config_entry_diagnostics,
 )
 from custom_components.aupu_q360.models import ApiResponse
+from custom_components.aupu_q360.shadow import LightShadowUpdate
 from custom_components.aupu_q360.wss import AupuShadowWebSocket
 
 pytestmark = [
@@ -253,6 +255,7 @@ async def test_real_entry_manager_exposes_one_light_service_and_diagnostics(
     registry = er.async_get(hass)
     entities = er.async_entries_for_config_entry(registry, entry.entry_id)
     assert len(entities) == 1
+    assert entities[0].domain == "light"
     entity_id = entities[0].entity_id
 
     await hass.services.async_call(
@@ -369,7 +372,49 @@ async def test_real_entry_manager_starts_and_stops_fake_wss_without_task_leak(
     assert running == {"aupu_q360_wss", "aupu_q360_wss_ping", "aupu_q360_wss_receive"}
     assert len(session.calls) == 1
 
+    entities = er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
+    assert sorted(entity.domain for entity in entities) == ["binary_sensor", "light"]
+    channel = next(entity for entity in entities if entity.domain == "binary_sensor")
+    light = next(entity for entity in entities if entity.domain == "light")
+    channel_state = hass.states.get(channel.entity_id)
+    assert channel_state is not None
+    assert channel_state.state == "on"
+    assert channel_state.attributes["healthy"] is False
+    assert channel_state.attributes["state_stale"] is True
+
+    entry.runtime_data.coordinator.async_apply_shadow_update(
+        LightShadowUpdate(is_on=True, confirmed=True, source="reported")
+    )
+    await hass.async_block_till_done()
+    light_state = hass.states.get(light.entity_id)
+    assert light_state is not None
+    assert light_state.state == "on"
+    assert light_state.attributes["state_source"] == "reported"
+    assert light_state.attributes["state_stale"] is False
+    confirmed_at = light_state.attributes["last_confirmed_at"]
+    assert isinstance(confirmed_at, str)
+    parsed_confirmed_at = datetime.fromisoformat(confirmed_at)
+    assert parsed_confirmed_at.tzinfo is not None
+    assert parsed_confirmed_at.utcoffset() == UTC.utcoffset(parsed_confirmed_at)
+
+    entry.runtime_data.coordinator.async_apply_wss_connection(False, False)
+    await hass.async_block_till_done()
+    stale_light_state = hass.states.get(light.entity_id)
+    stale_channel_state = hass.states.get(channel.entity_id)
+    assert stale_light_state is not None
+    assert stale_light_state.state == "on"
+    assert stale_light_state.attributes["state_source"] == "reported"
+    assert stale_light_state.attributes["state_stale"] is True
+    assert stale_light_state.attributes["last_confirmed_at"] == confirmed_at
+    assert stale_channel_state is not None
+    assert stale_channel_state.state == "off"
+    assert stale_channel_state.attributes["healthy"] is False
+    assert stale_channel_state.attributes["state_stale"] is True
+    assert stale_channel_state.attributes["last_confirmed_at"] == confirmed_at
+
     await _unload(hass, entry)
+    assert hass.states.get(light.entity_id) is None
+    assert hass.states.get(channel.entity_id) is None
     await asyncio.sleep(0)
     after = {task for task in asyncio.all_tasks() if task is not current and not task.done()}
     assert after <= before

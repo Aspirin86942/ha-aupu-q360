@@ -61,10 +61,13 @@ Repair，控制会在凭据失效时停止。`jwt_expiring` 只是提前告警�
 ## 状态与控制语义
 
 - 每次用户开/关动作只通过 HTTPS 发送一次控制请求；失败后不会自动重放。
-- WSS 只用于状态反馈。收到设备 `reported` 状态后才视为已确认；只看到命令或 `desired`
-  状态时，实体保持推定状态。
-- WSS 断开或不健康不会反转最后状态，也不会触发第二次 HTTPS 控制；灯会继续显示推定状态，
-  直到后续确认。
+- WSS 只用于状态反馈，不做周期轮询；首次连接及每次重连后各执行一次 Shadow `get`。
+- `reported` 与 `get_reported` 是设备确认；`desired` 与 `command` 是推定状态。
+- WSS 断开或不健康不会反转最后状态，也不会触发第二次 HTTPS 控制；灯保留最后值，但
+  `state_stale=true`，直到后续设备确认。
+- `last_confirmed_at` 是 Home Assistant 接收设备确认的 UTC 时间；重启后由首次 Shadow `get`
+  重建，不代表设备侧事件发生时间。
+- 启用 WSS 时会创建状态通道 connectivity binary sensor；HTTPS-only 模式不创建该实体。
 
 ## 安全与备份
 

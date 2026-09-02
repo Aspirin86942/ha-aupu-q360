@@ -123,7 +123,11 @@ def test_wss_setup_exposes_connectivity_state_and_https_only_adds_nothing() -> N
     assert entity.is_on is False
     assert entity.extra_state_attributes["state_stale"] is True
 
-    _run(async_setup_binary_sensor(cast(HomeAssistant, object()), https_only_entry, add_https_entities))
+    _run(
+        async_setup_binary_sensor(
+            cast(HomeAssistant, object()), https_only_entry, add_https_entities
+        )
+    )
 
     assert https_entities == []
 
