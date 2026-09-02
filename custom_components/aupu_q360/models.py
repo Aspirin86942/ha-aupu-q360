@@ -12,6 +12,8 @@ from .signer import AppAuthorizationSigner, SignerSecrets
 if TYPE_CHECKING:
     from .api import AupuApiClient
     from .coordinator import AupuCoordinator
+    from .discovery import StateDiscoverySession
+    from .discovery_store import DiscoveryReportStore
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +158,8 @@ class AupuRuntimeData:
     use_wss: bool = False
     user_uuid: str | None = field(default=None, repr=False)
     coordinator: AupuCoordinator = field(init=False)
+    discovery_store: DiscoveryReportStore = field(init=False, repr=False)
+    discovery_session: StateDiscoverySession = field(init=False, repr=False)
     stoppers: list[AsyncStopper] = field(default_factory=list)
 
 

@@ -1,0 +1,64 @@
+start_discovery:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: aupu_q360
+begin_discovery_step:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: aupu_q360
+    capability:
+      required: true
+      selector:
+        select:
+          options:
+            - heating
+            - ventilation
+            - drying
+            - swing
+            - fan_level
+            - timer
+            - idle_environment
+    target:
+      required: true
+      selector:
+        select:
+          options:
+            - "off"
+            - "on"
+            - level_1
+            - level_2
+            - level_3
+    round:
+      required: true
+      selector:
+        select:
+          options:
+            - 1
+            - 2
+complete_discovery_step:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: aupu_q360
+finish_discovery:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: aupu_q360
+cancel_discovery:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: aupu_q360

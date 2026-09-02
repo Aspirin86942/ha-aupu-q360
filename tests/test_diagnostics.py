@@ -30,6 +30,7 @@ _DIAGNOSTIC_KEYS = {
     "last_error_code",
     "light_state_source",
     "assumed_state",
+    "state_discovery",
 }
 
 
@@ -105,6 +106,7 @@ def test_diagnostics_build_only_the_allowed_scalar_whitelist(
         "last_error_code": "protocol_error",
         "light_state_source": "reported",
         "assumed_state": False,
+        "state_discovery": {"report_available": False},
     }
     serialized = json.dumps(result, sort_keys=True)
     assert set(result) == _DIAGNOSTIC_KEYS
@@ -139,6 +141,7 @@ def test_unloaded_and_incomplete_runtime_keep_the_same_whitelist(
         "last_error_code": "none",
         "light_state_source": "unknown",
         "assumed_state": False,
+        "state_discovery": {"report_available": False},
     }
     assert results == [expected, expected]
     assert all(secret not in json.dumps(result) for result in results)
@@ -189,6 +192,7 @@ def test_diagnostics_fold_secret_bearing_attribute_and_time_errors_to_defaults(
         "last_error_code": "none",
         "light_state_source": "unknown",
         "assumed_state": False,
+        "state_discovery": {"report_available": False},
     }
     assert results == [expected, expected]
     assert all(secret not in json.dumps(result) for result in results)
@@ -211,6 +215,64 @@ def test_incomplete_runtime_does_not_compute_credential_expiry(
 
     assert result["authentication_expiry_bucket"] == "unknown"
     assert set(result) == _DIAGNOSTIC_KEYS
+
+
+def test_diagnostics_include_only_the_validated_latest_discovery_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch diagnostics reading Config Entry data or omitting the private report."""
+    from custom_components.aupu_q360.discovery_analysis import build_discovery_report
+
+    report = build_discovery_report(
+        integration_version="0.1.1",
+        started_at=datetime(2026, 9, 2, 13, 47, tzinfo=UTC),
+        wss_baseline_succeeded=True,
+        steps=(),
+    )
+
+    class FakeReportStore:
+        async def async_load(self) -> dict[str, Any]:
+            return report
+
+    sentinel = "private-config-entry-value"
+    runtime = SimpleNamespace(
+        credential=_credential(_NOW + timedelta(days=8)),
+        use_wss=True,
+        coordinator=SimpleNamespace(),
+        discovery_store=FakeReportStore(),
+    )
+    entry = SimpleNamespace(runtime_data=runtime, data={"secret": sentinel})
+    monkeypatch.setattr("custom_components.aupu_q360.diagnostics._utcnow", lambda: _NOW)
+
+    result = _run(async_get_config_entry_diagnostics(None, cast(Any, entry)))
+
+    assert result["state_discovery"] == {
+        "report_available": True,
+        "report": report,
+    }
+    assert sentinel not in json.dumps(result)
+
+
+def test_diagnostics_downgrade_report_load_failure_without_exception_text() -> None:
+    """Catch a corrupt Store failure escaping from the diagnostics endpoint."""
+    sentinel = "private-store-exception"
+
+    class FailingReportStore:
+        async def async_load(self) -> None:
+            raise RuntimeError(sentinel)
+
+    runtime = SimpleNamespace(
+        credential=_credential(_NOW + timedelta(days=8)),
+        use_wss=True,
+        coordinator=SimpleNamespace(),
+        discovery_store=FailingReportStore(),
+    )
+    entry = SimpleNamespace(runtime_data=runtime, data={"secret": sentinel})
+
+    result = _run(async_get_config_entry_diagnostics(None, cast(Any, entry)))
+
+    assert result["state_discovery"] == {"report_available": False}
+    assert sentinel not in json.dumps(result)
 
 
 @pytest.mark.parametrize(

@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Literal
+from typing import Any, Literal, cast
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .auth import BearerCredential
+from .const import INTEGRATION_VERSION
+from .discovery_models import JsonObject
 from .models import AupuRuntimeData
 
-_INTEGRATION_VERSION = "0.1.1"
 _ONE_DAY = timedelta(days=1)
 _SEVEN_DAYS = timedelta(days=7)
 _ERROR_CODES = frozenset(
@@ -33,7 +34,7 @@ ExpiryBucket = Literal["expired", "<24h", "<7d", ">=7d", "unknown"]
 async def async_get_config_entry_diagnostics(
     hass: HomeAssistant,
     entry: ConfigEntry[AupuRuntimeData],
-) -> dict[str, str | bool]:
+) -> JsonObject:
     """Return only non-secret scalar health signals from a loaded entry."""
     del hass
     runtime = _safe_getattr(entry, "runtime_data", None)
@@ -41,8 +42,8 @@ async def async_get_config_entry_diagnostics(
     coordinator = _safe_getattr(runtime, "coordinator", None)
     runtime_complete = isinstance(credential, BearerCredential) and coordinator is not None
 
-    result: dict[str, str | bool] = {}
-    result["integration_version"] = _INTEGRATION_VERSION
+    result: JsonObject = {}
+    result["integration_version"] = INTEGRATION_VERSION
     result["authentication_expiry_bucket"] = (
         _safe_expiry_bucket(credential) if runtime_complete else "unknown"
     )
@@ -80,7 +81,22 @@ async def async_get_config_entry_diagnostics(
         if runtime_complete
         else False
     )
+    result["state_discovery"] = await _safe_discovery_report(runtime)
     return result
+
+
+async def _safe_discovery_report(runtime: object) -> JsonObject:
+    store = _safe_getattr(runtime, "discovery_store", None)
+    loader = _safe_getattr(store, "async_load", None)
+    if not callable(loader):
+        return {"report_available": False}
+    try:
+        report = await cast(Any, loader)()
+    except Exception:  # noqa: BLE001 - diagnostics must not expose Store details
+        return {"report_available": False}
+    if not isinstance(report, dict):
+        return {"report_available": False}
+    return {"report_available": True, "report": cast(JsonObject, report)}
 
 
 def _expiry_bucket(credential: object, now: datetime) -> ExpiryBucket:

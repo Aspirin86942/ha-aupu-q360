@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -11,6 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from custom_components.aupu_q360 import shadow
 from custom_components.aupu_q360.errors import AupuProtocolError
 from custom_components.aupu_q360.models import DeviceConfig
 from custom_components.aupu_q360.shadow import LightShadowUpdate, parse_shadow_update
@@ -19,6 +21,44 @@ from custom_components.aupu_q360.shadow import LightShadowUpdate, parse_shadow_u
 DEVICE = DeviceConfig(did="123", tag="synthetic")
 GET_ACCEPTED = "$aws/things/123/shadow/get/accepted"
 UPDATE_ACCEPTED = "$aws/things/123/shadow/update/accepted"
+
+
+def test_accepted_shadow_is_decoded_once_without_repr_exposure() -> None:
+    """Catch discovery re-decoding payloads or retaining their content in diagnostics."""
+    client_token = "disc-0123456789abcdef0123456789abcdef"
+    payload = (
+        b'{"clientToken":"'
+        + client_token.encode()
+        + b'","state":{"reported":{"123":{"2":{"properties":'
+        b'{"1":true,"9":22.5}}}}}}'
+    )
+
+    message = shadow.parse_accepted_shadow(DEVICE, GET_ACCEPTED, payload)
+
+    assert isinstance(message, shadow.AcceptedShadow)
+    assert message.topic_kind == "get"
+    assert message.client_token == client_token
+    assert shadow.parse_light_shadow_update(DEVICE, message) == LightShadowUpdate(
+        True, True, "get_reported"
+    )
+    rendered = repr(message)
+    assert client_token not in rendered
+    assert "22.5" not in rendered
+
+
+@pytest.mark.parametrize(
+    "client_token",
+    [1, True, ["invalid"], "x" * 129],
+)
+def test_invalid_client_token_raises_fixed_protocol_error(client_token: object) -> None:
+    """Catch untrusted correlation values reaching exceptions or later reports."""
+    payload = b'{"clientToken":' + json.dumps(client_token).encode() + b',"state":{"reported":{}}}'
+
+    with pytest.raises(AupuProtocolError) as raised:
+        shadow.parse_accepted_shadow(DEVICE, GET_ACCEPTED, payload)
+
+    assert str(raised.value) == "Service response is invalid"
+    assert repr(client_token) not in str(raised.value)
 
 
 def test_get_accepted_reported_value_is_confirmed_get_reported() -> None:

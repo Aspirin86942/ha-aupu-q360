@@ -23,7 +23,7 @@ from custom_components.aupu_q360.mqtt_codec import (
     decode_packets,
     encode_publish,
 )
-from custom_components.aupu_q360.shadow import LightShadowUpdate
+from custom_components.aupu_q360.shadow import AcceptedShadow
 from custom_components.aupu_q360.wss import _MAX_WSS_PACKET_BYTES, AupuShadowWebSocket
 
 WSS_ENDPOINT = "wss://aii5h05kuofsj.ats.iot.cn-north-1.amazonaws.com.cn/mqtt"
@@ -191,16 +191,19 @@ def _client(
     user_uuid: str | None = "synthetic-user-uuid",
     connections: list[tuple[bool, bool]] | None = None,
     auth_failures: list[None] | None = None,
-    updates: list[LightShadowUpdate] | None = None,
+    updates: list[AcceptedShadow] | None = None,
 ) -> AupuShadowWebSocket:
     connection_events = [] if connections is None else connections
     auth_events = [] if auth_failures is None else auth_failures
     shadow_updates = [] if updates is None else updates
 
-    def parse_shadow(topic: str, payload: bytes) -> LightShadowUpdate | None:
+    def parse_shadow(topic: str, payload: bytes) -> AcceptedShadow | None:
         if topic != UPDATE_ACCEPTED or payload != b"synthetic-shadow":
             raise AupuProtocolError
-        return LightShadowUpdate(is_on=False, confirmed=True, source="reported")
+        return AcceptedShadow(
+            topic_kind="update",
+            state={"reported": {DEVICE.did: {"2": {"properties": {"1": False}}}}},
+        )
 
     return AupuShadowWebSocket(
         session=cast(aiohttp.ClientSession, session),
@@ -213,7 +216,7 @@ def _client(
         ),
         async_auth_failed=lambda: auth_events.append(None),
         parse_shadow=parse_shadow,
-        async_shadow_update=shadow_updates.append,
+        async_shadow_message=shadow_updates.append,
         clock_ms=lambda: 1_700_000_000_123,
         sleep=sleep,
     )
@@ -227,7 +230,7 @@ async def test_connect_subscribe_get_ping_shadow_and_disconnect_in_order() -> No
     api = FakeApi()
     sleep = ControlledSleep()
     connections: list[tuple[bool, bool]] = []
-    updates: list[LightShadowUpdate] = []
+    updates: list[AcceptedShadow] = []
     client = _client(
         api=api,
         session=session,
@@ -275,7 +278,12 @@ async def test_connect_subscribe_get_ping_shadow_and_disconnect_in_order() -> No
 
     websocket.queue_binary(encode_publish(UPDATE_ACCEPTED, b"synthetic-shadow"))
     await _wait_until(lambda: bool(updates))
-    assert updates == [LightShadowUpdate(False, True, "reported")]
+    assert updates == [
+        AcceptedShadow(
+            topic_kind="update",
+            state={"reported": {DEVICE.did: {"2": {"properties": {"1": False}}}}},
+        )
+    ]
 
     await sleep.release_next()
     await _wait_until(lambda: connections[-1:] == [(True, True)])
@@ -286,6 +294,42 @@ async def test_connect_subscribe_get_ping_shadow_and_disconnect_in_order() -> No
     assert websocket.close_calls == 1
     assert connections[-1] == (False, False)
     assert client.is_running is False
+
+
+@direct_step
+async def test_correlated_shadow_get_only_sends_on_the_current_ready_connection() -> None:
+    """Catch discovery gets being queued, replayed, or emitted before subscription."""
+    websocket = _ready_socket()
+    sleep = ControlledSleep()
+    client = _client(api=FakeApi(), session=FakeSession([websocket]), sleep=sleep)
+    client_token = "disc-0123456789abcdef0123456789abcdef"
+
+    with pytest.raises(AupuProtocolError):
+        await client.async_request_shadow_get(client_token)
+
+    await client.async_start()
+    await _wait_until(lambda: len(websocket.sent) == 4)
+    await client.async_request_shadow_get(client_token)
+
+    packet = decode_packets(websocket.sent[-1])[0]
+    assert packet.packet_type is PacketType.PUBLISH
+    assert packet.topic == "$aws/things/123456789/shadow/get"
+    assert json.loads(packet.payload) == {"clientToken": client_token}
+
+    await client.async_stop()
+    with pytest.raises(AupuProtocolError):
+        await client.async_request_shadow_get(client_token)
+    assert len(websocket.sent) == 6  # CONNECT, 2 SUBSCRIBE, 2 GET, DISCONNECT
+
+
+@direct_step
+async def test_correlated_shadow_get_rejects_uncontrolled_tokens() -> None:
+    """Catch arbitrary strings entering a Shadow request or later report correlation."""
+    client = _client(api=FakeApi(), session=FakeSession([]), sleep=ControlledSleep())
+
+    for token in ("", "disc-not-hex", "x" * 129, "disc-" + "0" * 31):
+        with pytest.raises(AupuProtocolError):
+            await client.async_request_shadow_get(token)
 
 
 @direct_step

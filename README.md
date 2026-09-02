@@ -67,6 +67,22 @@ Repair，控制会在凭据失效时停止。`jwt_expiring` 只是提前告警�
   重建，不代表设备侧事件发生时间。
 - 启用 WSS 时会创建状态通道 connectivity binary sensor；HTTPS-only 模式不创建该实体。
 
+## 只读状态发现
+
+启用且连接 WSS 后，可通过五个 `aupu_q360` Action 执行一次性的只读字段发现：
+`start_discovery`、`begin_discovery_step`、`complete_discovery_step`、`finish_discovery` 和
+`cancel_discovery`。发现会话只在现有 WSS 通道发送相关联的 Shadow `get`，不会发送取暖、
+换气、烘干、摆风、档位或定时控制；这些单变量实验必须由用户在奥普实体面板手工操作，
+Home Assistant 不会代为操作。
+
+每个能力需要按 begin → 面板单变量操作 → 等待 15–30 秒 → complete 的顺序完成两轮开启和
+关闭，最后 finish 并下载集成诊断。取消会清理当前内存会话，但不会覆盖上一次成功报告。
+报告只包含脱敏候选，不会自动修改配置或创建实体；候选字段进入正式映射前仍需人工确认和
+独立设计。原始 HAR、SAZ、PCAP 或 Shadow 报文不是运行依赖。
+
+完整的授权阶段、实验矩阵、异常停止条件和报告审查要求见
+[Q360 只读状态发现运行手册](docs/q360-read-only-discovery-runbook.md)。
+
 ## 安全与备份
 
 HA 备份包含 Config Entry 中的 JWT、私有签名和设备配置。备份必须加密、限制访问，并按凭据
@@ -84,8 +100,9 @@ HA 备份包含 Config Entry 中的 JWT、私有签名和设备配置。备份�
 
 ## 故障排查
 
-先下载 Home Assistant 的集成诊断。诊断只返回白名单健康字段，包括集成版本、粗粒度 JWT
-到期区间、WSS 开关/连接/健康状态、推定状态、状态来源和固定错误码。常见固定错误码包括
+先下载 Home Assistant 的集成诊断。诊断返回白名单健康字段，包括集成版本、粗粒度 JWT
+到期区间、WSS 开关/连接/健康状态、推定状态、状态来源和固定错误码；存在已成功保存的只读
+发现结果时，还会包含通过固定 schema 与最终敏感扫描的脱敏报告。常见固定错误码包括
 `authentication_failed`、`rate_limited`、`temporary_failure`、`protocol_error` 和
 `runtime_stopped`。
 

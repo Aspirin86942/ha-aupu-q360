@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal, NoReturn
 
 from .errors import AupuProtocolError
@@ -19,13 +19,61 @@ class LightShadowUpdate:
     source: Literal["reported", "desired", "get_reported"]
 
 
+@dataclass(frozen=True, slots=True)
+class AcceptedShadow:
+    """One validated accepted Shadow message with private payload state."""
+
+    topic_kind: Literal["get", "update"]
+    state: dict[str, Any] = field(repr=False)
+    client_token: str | None = field(default=None, repr=False)
+
+
+def parse_accepted_shadow(
+    device: DeviceConfig, topic: str, payload: bytes
+) -> AcceptedShadow | None:
+    """Decode one accepted target Shadow without exposing its content."""
+    topic_kind = _target_topic_kind(device, topic)
+    if topic_kind is None:
+        return None
+    document = _decode_shadow_document(payload)
+    state = document.get("state")
+    if not isinstance(state, dict):
+        raise AupuProtocolError
+    client_token = document.get("clientToken")
+    if client_token is not None and (not isinstance(client_token, str) or len(client_token) > 128):
+        raise AupuProtocolError
+    return AcceptedShadow(topic_kind=topic_kind, state=state, client_token=client_token)
+
+
+def parse_light_shadow_update(
+    device: DeviceConfig, message: AcceptedShadow
+) -> LightShadowUpdate | None:
+    """Parse the target light state from one already validated Shadow."""
+    reported = _extract_light_value(message.state, "reported", device.did)
+    if reported is not None:
+        return LightShadowUpdate(
+            is_on=reported,
+            confirmed=True,
+            source="get_reported" if message.topic_kind == "get" else "reported",
+        )
+    desired = _extract_light_value(message.state, "desired", device.did)
+    if desired is None:
+        return None
+    return LightShadowUpdate(is_on=desired, confirmed=False, source="desired")
+
+
 def parse_shadow_update(
     device: DeviceConfig, topic: str, payload: bytes
 ) -> LightShadowUpdate | None:
     """Parse the target device's accepted Shadow state, if it changes the light."""
-    topic_kind = _target_topic_kind(device, topic)
-    if topic_kind is None:
+    message = parse_accepted_shadow(device, topic, payload)
+    if message is None:
         return None
+    return parse_light_shadow_update(device, message)
+
+
+def _decode_shadow_document(payload: bytes) -> dict[str, Any]:
+    """Decode a Shadow JSON object behind a fixed protocol error."""
     if not isinstance(payload, bytes):
         raise AupuProtocolError
     try:
@@ -34,21 +82,7 @@ def parse_shadow_update(
         raise AupuProtocolError from None
     if not isinstance(document, dict):
         raise AupuProtocolError
-    state = document.get("state")
-    if not isinstance(state, dict):
-        raise AupuProtocolError
-
-    reported = _extract_light_value(state, "reported", device.did)
-    if reported is not None:
-        return LightShadowUpdate(
-            is_on=reported,
-            confirmed=True,
-            source="get_reported" if topic_kind == "get" else "reported",
-        )
-    desired = _extract_light_value(state, "desired", device.did)
-    if desired is None:
-        return None
-    return LightShadowUpdate(is_on=desired, confirmed=False, source="desired")
+    return document
 
 
 def _target_topic_kind(device: DeviceConfig, topic: str) -> Literal["get", "update"] | None:

@@ -17,6 +17,7 @@ from homeassistant.config_entries import SOURCE_REAUTH, SOURCE_USER, ConfigEntry
 from homeassistant.const import STATE_UNAVAILABLE
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.restore_state import ATTR_RESTORED
@@ -27,7 +28,16 @@ from custom_components.aupu_q360.const import DOMAIN
 from custom_components.aupu_q360.diagnostics import (
     async_get_config_entry_diagnostics,
 )
+from custom_components.aupu_q360.discovery_store import DiscoveryReportStore
 from custom_components.aupu_q360.models import ApiResponse
+from custom_components.aupu_q360.mqtt_codec import decode_packets, encode_publish
+from custom_components.aupu_q360.services import (
+    BEGIN_DISCOVERY_STEP,
+    CANCEL_DISCOVERY,
+    COMPLETE_DISCOVERY_STEP,
+    FINISH_DISCOVERY,
+    START_DISCOVERY,
+)
 from custom_components.aupu_q360.shadow import LightShadowUpdate
 from custom_components.aupu_q360.wss import AupuShadowWebSocket
 
@@ -82,6 +92,9 @@ class _FakeWebSocket:
 
     async def close(self) -> None:
         self.close_calls += 1
+
+    def queue_binary(self, data: bytes) -> None:
+        self.messages.put_nowait(_FakeMessage(aiohttp.WSMsgType.BINARY, data))
 
 
 class _FakeSession:
@@ -162,6 +175,70 @@ def _entry_data(
 
 async def _unload(hass: HomeAssistant, entry: ConfigEntry[Any]) -> None:
     assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+def _shadow_state(is_on: bool) -> dict[str, object]:
+    return {
+        "reported": {
+            "123456789": {
+                "2": {"properties": {"1": is_on}},
+                "5": {"properties": {"2": is_on}},
+                "6": {"properties": {"3": "private-on-text" if is_on else "private-off-text"}},
+            }
+        }
+    }
+
+
+async def _call_discovery_snapshot_action(
+    hass: HomeAssistant,
+    websocket: _FakeWebSocket,
+    service: str,
+    data: dict[str, object],
+    state: dict[str, object],
+) -> dict[str, Any]:
+    sent_before = len(websocket.sent)
+    task = asyncio.create_task(
+        hass.services.async_call(
+            DOMAIN,
+            service,
+            data,
+            blocking=True,
+            return_response=True,
+        )
+    )
+    await _wait_until(lambda: len(websocket.sent) > sent_before)
+    packet = decode_packets(websocket.sent[-1])[0]
+    assert packet.topic == "$aws/things/123456789/shadow/get"
+    request = json.loads(packet.payload)
+    client_token = request["clientToken"]
+    assert isinstance(client_token, str)
+    response_payload = json.dumps(
+        {"clientToken": client_token, "state": state},
+        separators=(",", ":"),
+    ).encode()
+    websocket.queue_binary(
+        encode_publish(
+            "$aws/things/123456789/shadow/get/accepted",
+            response_payload,
+        )
+    )
+    response = await task
+    assert isinstance(response, dict)
+    return response
+
+
+async def _queue_shadow_update(
+    hass: HomeAssistant,
+    websocket: _FakeWebSocket,
+    state: dict[str, object],
+) -> None:
+    websocket.queue_binary(
+        encode_publish(
+            "$aws/things/123456789/shadow/update/accepted",
+            json.dumps({"state": state}, separators=(",", ":")).encode(),
+        )
+    )
     await hass.async_block_till_done()
 
 
@@ -281,9 +358,11 @@ async def test_real_entry_manager_exposes_one_light_service_and_diagnostics(
         "last_error_code",
         "light_state_source",
         "assumed_state",
+        "state_discovery",
     }
     assert diagnostics["last_error_code"] == "none"
     assert diagnostics["light_state_source"] == "command"
+    assert diagnostics["state_discovery"] == {"report_available": False}
 
     await _unload(hass, entry)
     assert not hasattr(entry, "runtime_data")
@@ -428,6 +507,208 @@ async def test_real_entry_manager_starts_and_stops_fake_wss_without_task_leak(
     assert after <= before
     assert websocket.sent[-1] == b"\xe0\x00"
     assert websocket.close_calls == 1
+
+
+async def test_real_services_complete_sanitized_discovery_and_remove_private_store(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Run two synthetic panel rounds through real HA services, Store, and diagnostics."""
+    websocket = _FakeWebSocket()
+    session = _FakeSession(websocket)
+    sleep = _ControlledSleep()
+    original_init = AupuShadowWebSocket.__init__
+
+    def init_with_fake_sleep(
+        client: AupuShadowWebSocket,
+        *args: object,
+        **kwargs: object,
+    ) -> None:
+        kwargs["sleep"] = sleep
+        original_init(client, *args, **kwargs)
+
+    async def fake_get_wss_credentials(self: AupuApiClient) -> WssCredentials:
+        del self
+        return WssCredentials(
+            authorizer_name="synthetic-authorizer",
+            signature="synthetic-signature-1",
+            token_key_name="synthetic-token-key",
+        )
+
+    monkeypatch.setattr(AupuShadowWebSocket, "__init__", init_with_fake_sleep)
+    monkeypatch.setattr(AupuApiClient, "get_wss_credentials", fake_get_wss_credentials)
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.async_get_clientsession",
+        lambda _: session,
+    )
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="AUPU Q360",
+        unique_id="synthetic-discovery-entry",
+        data=_entry_data(
+            token=_jwt(expires_in=7 * 24 * 60 * 60, subject="synthetic-discovery"),
+            use_wss=True,
+            user_uuid="synthetic-user-uuid",
+        ),
+    )
+    entry.add_to_hass(hass)
+    current = asyncio.current_task()
+    tasks_before = {task for task in asyncio.all_tasks() if task is not current}
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await websocket.receive_started.wait()
+    await _wait_until(lambda: sleep.delays == [30])
+    for service in (
+        START_DISCOVERY,
+        BEGIN_DISCOVERY_STEP,
+        COMPLETE_DISCOVERY_STEP,
+        FINISH_DISCOVERY,
+        CANCEL_DISCOVERY,
+    ):
+        assert hass.services.has_service(DOMAIN, service)
+
+    base = {"config_entry_id": entry.entry_id}
+    start_response = await _call_discovery_snapshot_action(
+        hass,
+        websocket,
+        START_DISCOVERY,
+        base,
+        _shadow_state(False),
+    )
+    assert start_response == {
+        "state": "ready",
+        "message_code": "discovery_ready_for_step",
+    }
+
+    for round_number in (1, 2):
+        for target, is_on in (("on", True), ("off", False)):
+            begin_response = await _call_discovery_snapshot_action(
+                hass,
+                websocket,
+                BEGIN_DISCOVERY_STEP,
+                {
+                    **base,
+                    "capability": "heating",
+                    "target": target,
+                    "round": round_number,
+                },
+                _shadow_state(not is_on),
+            )
+            assert begin_response["message_code"] == "discovery_ready_for_panel_action"
+            await _queue_shadow_update(hass, websocket, _shadow_state(is_on))
+            complete_response = await _call_discovery_snapshot_action(
+                hass,
+                websocket,
+                COMPLETE_DISCOVERY_STEP,
+                base,
+                _shadow_state(is_on),
+            )
+            assert complete_response == {
+                "state": "ready",
+                "message_code": "discovery_step_recorded",
+            }
+
+    finish_response = await hass.services.async_call(
+        DOMAIN,
+        FINISH_DISCOVERY,
+        base,
+        blocking=True,
+        return_response=True,
+    )
+    assert finish_response["state"] == "idle"
+    assert finish_response["report_available"] is True
+    assert finish_response["confirmed_candidate_count"] == 3
+    assert "candidates" not in finish_response
+
+    diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+    discovery_diagnostics = diagnostics["state_discovery"]
+    assert discovery_diagnostics["report_available"] is True
+    report = discovery_diagnostics["report"]
+    assert any(
+        candidate["path"] == "service/5/property/2"
+        and candidate["classification"] == "confirmed_candidate"
+        for candidate in report["candidates"]
+    )
+    serialized = json.dumps(report, sort_keys=True)
+    assert "123456789" not in serialized
+    assert entry.entry_id not in serialized
+    assert "clientToken" not in serialized
+    assert "$aws/things/" not in serialized
+    assert "private-on-text" not in serialized
+    assert "private-off-text" not in serialized
+    entities = er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
+    light = next(entity for entity in entities if entity.domain == "light")
+    light_state = hass.states.get(light.entity_id)
+    assert light_state is not None
+    assert light_state.state == "off"
+
+    report_store = entry.runtime_data.discovery_store
+    await _unload(hass, entry)
+    assert await report_store.async_load() == report
+    for service in (
+        START_DISCOVERY,
+        BEGIN_DISCOVERY_STEP,
+        COMPLETE_DISCOVERY_STEP,
+        FINISH_DISCOVERY,
+        CANCEL_DISCOVERY,
+    ):
+        assert not hass.services.has_service(DOMAIN, service)
+
+    await hass.config_entries.async_remove(entry.entry_id)
+    await hass.async_block_till_done()
+    removed_store = DiscoveryReportStore(hass, entry.entry_id, lambda report: report)
+    assert await removed_store.async_load() is None
+    await asyncio.sleep(0)
+    tasks_after = {
+        task
+        for task in asyncio.all_tasks()
+        if task is not current
+        and not task.done()
+        and (
+            task.get_name().startswith("aupu_q360_wss")
+            or task.get_name().startswith("aupu_q360_discovery")
+        )
+    }
+    assert tasks_after <= tasks_before
+
+
+async def test_real_https_only_discovery_fails_without_transport_or_control(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep discovery fail-closed when this Config Entry has no subscribed WSS."""
+    control_calls: list[bool] = []
+
+    async def fake_set_light(self: AupuApiClient, is_on: bool) -> ApiResponse:
+        del self
+        control_calls.append(is_on)
+        return ApiResponse(status=200, result={}, timestamp=0)
+
+    monkeypatch.setattr(AupuApiClient, "set_light", fake_set_light)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="AUPU Q360",
+        unique_id="synthetic-https-discovery-entry",
+        data=_entry_data(
+            token=_jwt(expires_in=7 * 24 * 60 * 60, subject="synthetic-https-discovery")
+        ),
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    with pytest.raises(ServiceValidationError) as raised:
+        await hass.services.async_call(
+            DOMAIN,
+            START_DISCOVERY,
+            {"config_entry_id": entry.entry_id},
+            blocking=True,
+            return_response=True,
+        )
+
+    assert raised.value.translation_key == "discovery_wss_unavailable"
+    assert control_calls == []
+    await _unload(hass, entry)
 
 
 async def test_real_entry_manager_wss_to_https_only_removes_state_channel(

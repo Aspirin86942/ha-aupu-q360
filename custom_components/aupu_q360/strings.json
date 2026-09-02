@@ -99,6 +99,85 @@
       }
     }
   },
+  "services": {
+    "start_discovery": {
+      "name": "Start read-only discovery",
+      "description": "Takes one correlated read-only Shadow baseline snapshot.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Config entry",
+          "description": "The loaded AUPU Q360 config entry to observe."
+        }
+      }
+    },
+    "begin_discovery_step": {
+      "name": "Begin discovery step",
+      "description": "Takes a before snapshot and starts observing one controlled panel experiment.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Config entry",
+          "description": "The loaded AUPU Q360 config entry to observe."
+        },
+        "capability": {
+          "name": "Capability label",
+          "description": "The controlled capability label for this experiment."
+        },
+        "target": {
+          "name": "Target label",
+          "description": "The controlled target label selected for this experiment."
+        },
+        "round": {
+          "name": "Round",
+          "description": "The first or second repetition of this experiment."
+        }
+      }
+    },
+    "complete_discovery_step": {
+      "name": "Complete discovery step",
+      "description": "Takes an after snapshot and keeps only bounded sanitized changes.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Config entry",
+          "description": "The loaded AUPU Q360 config entry to observe."
+        }
+      }
+    },
+    "finish_discovery": {
+      "name": "Finish read-only discovery",
+      "description": "Validates and atomically saves the latest sanitized report.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Config entry",
+          "description": "The loaded AUPU Q360 config entry to observe."
+        }
+      }
+    },
+    "cancel_discovery": {
+      "name": "Cancel read-only discovery",
+      "description": "Clears the active in-memory session without replacing the prior report.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Config entry",
+          "description": "The loaded AUPU Q360 config entry to observe."
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "discovery_wss_unavailable": {"message": "The read-only state channel is unavailable."},
+    "discovery_busy": {"message": "A read-only discovery session is already active."},
+    "discovery_snapshot_timeout": {"message": "The correlated Shadow snapshot timed out."},
+    "discovery_invalid_transition": {"message": "This action is not valid in the current discovery state."},
+    "discovery_step_expired": {"message": "The active discovery step expired."},
+    "discovery_session_expired": {"message": "The read-only discovery session expired."},
+    "discovery_resource_limit": {"message": "The active step exceeded its sanitized change limit."},
+    "discovery_report_save_failed": {"message": "The sanitized report could not be saved."},
+    "discovery_ready_for_step": {"message": "The baseline is ready for a controlled step."},
+    "discovery_ready_for_panel_action": {"message": "Operate one panel variable, wait 15 to 30 seconds, then complete the step."},
+    "discovery_step_recorded": {"message": "The sanitized discovery step was recorded."},
+    "discovery_report_saved": {"message": "The sanitized discovery report was saved."},
+    "discovery_cancelled": {"message": "The active discovery session was cancelled."}
+  },
   "issues": {
     "jwt_expiring": {
       "title": "AUPU token expires soon",

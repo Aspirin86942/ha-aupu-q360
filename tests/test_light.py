@@ -29,8 +29,8 @@ from custom_components.aupu_q360.coordinator import AupuCoordinator, StateClock
 from custom_components.aupu_q360.errors import AupuAuthError, AupuTemporaryError
 from custom_components.aupu_q360.light import AupuLight
 from custom_components.aupu_q360.light import async_setup_entry as async_setup_light
-from custom_components.aupu_q360.models import ApiResponse, AupuRuntimeData
-from custom_components.aupu_q360.shadow import LightShadowUpdate
+from custom_components.aupu_q360.models import ApiResponse, AupuRuntimeData, DeviceConfig
+from custom_components.aupu_q360.shadow import AcceptedShadow, LightShadowUpdate
 from custom_components.aupu_q360.wss import AupuShadowWebSocket
 
 _TEST_LOOP = asyncio.new_event_loop()
@@ -95,6 +95,22 @@ class IssueRecorder:
         self.deleted.append((domain, issue_id))
 
 
+class _NoopStore:
+    """Keep coordinator lifecycle tests independent from HA storage internals."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+
+    async def async_load(self) -> None:
+        return None
+
+    async def async_save(self, data: object) -> None:
+        del data
+
+    async def async_remove(self) -> None:
+        return None
+
+
 @pytest.fixture
 def issues(monkeypatch: pytest.MonkeyPatch) -> IssueRecorder:
     recorder = IssueRecorder()
@@ -106,6 +122,7 @@ def issues(monkeypatch: pytest.MonkeyPatch) -> IssueRecorder:
         "custom_components.aupu_q360.coordinator.ir.async_delete_issue",
         recorder.delete,
     )
+    monkeypatch.setattr("custom_components.aupu_q360.discovery_store.Store", _NoopStore)
     return recorder
 
 
@@ -428,6 +445,49 @@ def test_wss_auth_failure_reuses_deduplicated_reauth_entry(
     assert requests == [None]
 
 
+def test_discovery_observer_failure_cannot_block_light_or_expose_details(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Catch optional discovery failures escaping before formal light state is applied."""
+    device = DeviceConfig(did="123456789", tag="synthetic-tag")
+    coordinator = AupuCoordinator(
+        hass=cast(HomeAssistant, SimpleNamespace(data={})),
+        entry_id="synthetic-entry",
+        credential=_credential(timedelta(days=2)),
+        api=cast(AupuApiClient, FakeApi()),
+        async_request_reauth=lambda: None,
+        session=cast(Any, object()),
+        device=device,
+        use_wss=True,
+        user_uuid="synthetic-user",
+    )
+    observed: list[AcceptedShadow] = []
+    cancelled: list[None] = []
+    sentinel = "synthetic-private-observer-detail"
+
+    def observe(message: AcceptedShadow) -> None:
+        observed.append(message)
+        raise RuntimeError(sentinel)
+
+    coordinator.async_set_discovery_observer(observe, lambda: cancelled.append(None))
+    coordinator.async_apply_wss_connection(True, False)
+    message = AcceptedShadow(
+        topic_kind="update",
+        state={"reported": {device.did: {"2": {"properties": {"1": False}}}}},
+    )
+
+    coordinator.async_apply_shadow_message(message)
+
+    assert coordinator.is_on is False
+    assert coordinator.light_state_source == "reported"
+    assert observed == [message]
+    assert [record.getMessage() for record in caplog.records] == ["AUPU discovery observer failed"]
+    assert sentinel not in caplog.text
+
+    coordinator.async_apply_wss_connection(False, False)
+    assert cancelled == [None]
+
+
 @pytest.mark.parametrize(
     ("offset", "created_id", "severity", "persistent", "raises_auth"),
     [
@@ -490,6 +550,7 @@ class FakeEntry:
     data: Mapping[str, Any]
     unique_id: str | None = "9f4e70f00edb76c1b3d8"
     entry_id: str = "synthetic-entry"
+    domain: str = DOMAIN
     runtime_data: AupuRuntimeData | None = None
     unload_callbacks: list[Callable[[], Coroutine[Any, Any, None] | None]] = field(
         default_factory=list
@@ -563,10 +624,50 @@ class FakeConfigEntries:
         return True
 
 
+class FakeServiceRegistry:
+    """Record domain handler lifecycle without invoking HA internals."""
+
+    def __init__(self) -> None:
+        self.handlers: dict[tuple[str, str], object] = {}
+
+    def async_register(
+        self,
+        domain: str,
+        service: str,
+        handler: object,
+        schema: object,
+        supports_response: object,
+    ) -> None:
+        del schema, supports_response
+        self.handlers[(domain, service)] = handler
+
+    def async_remove(self, domain: str, service: str) -> None:
+        self.handlers.pop((domain, service), None)
+
+
+class FakeBus:
+    """Retain removable one-shot listeners for setup and unload tests."""
+
+    def __init__(self) -> None:
+        self.listeners: list[tuple[str, object]] = []
+
+    def async_listen_once(self, event_type: str, listener: object) -> Callable[[], None]:
+        item = (event_type, listener)
+        self.listeners.append(item)
+
+        def remove() -> None:
+            if item in self.listeners:
+                self.listeners.remove(item)
+
+        return remove
+
+
 @dataclass
 class FakeHass:
     config_entries: FakeConfigEntries
     data: dict[str, Any] = field(default_factory=dict)
+    services: FakeServiceRegistry = field(default_factory=FakeServiceRegistry)
+    bus: FakeBus = field(default_factory=FakeBus)
 
     def __post_init__(self) -> None:
         self.config_entries.hass = self
@@ -642,7 +743,7 @@ def test_setup_starts_one_coordinator_stopper_and_registers_dual_platforms(
     )
     assert entry.runtime_data is not None
     coordinator = entry.runtime_data.coordinator
-    assert entry.runtime_data.stoppers == [coordinator]
+    assert entry.runtime_data.stoppers == [entry.runtime_data.discovery_session, coordinator]
     assert config_entries.forwarded == (Platform.LIGHT, Platform.BINARY_SENSOR)
     assert len(config_entries.entities) == 1
     entity = config_entries.entities[0]
@@ -669,6 +770,7 @@ def test_setup_starts_one_coordinator_stopper_and_registers_dual_platforms(
     )
     assert config_entries.unloaded == (Platform.LIGHT, Platform.BINARY_SENSOR)
     assert stop_calls == 1
+    assert hass.services.handlers == {}
     assert "runtime_data" not in entry.__dict__
 
 
@@ -758,7 +860,10 @@ def test_setup_and_unload_own_one_enabled_wss_lifecycle(
     )
     assert entry.runtime_data is not None
     assert len(starts) == 1
-    assert entry.runtime_data.stoppers == [entry.runtime_data.coordinator]
+    assert entry.runtime_data.stoppers == [
+        entry.runtime_data.discovery_session,
+        entry.runtime_data.coordinator,
+    ]
 
     assert (
         _run(

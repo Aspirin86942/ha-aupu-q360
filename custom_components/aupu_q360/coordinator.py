@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Literal
@@ -16,11 +17,19 @@ from .auth import AuthState, BearerCredential
 from .const import DOMAIN
 from .errors import AupuAuthError, AupuError
 from .models import DeviceConfig
-from .shadow import LightShadowUpdate, parse_shadow_update
+from .shadow import (
+    AcceptedShadow,
+    LightShadowUpdate,
+    parse_accepted_shadow,
+    parse_light_shadow_update,
+)
 from .wss import AupuShadowWebSocket
 
 LightStateSource = Literal["unknown", "command", "reported", "desired", "get_reported"]
 StateClock = Callable[[], datetime]
+DiscoveryObserver = Callable[[AcceptedShadow], None]
+DiscoveryCancel = Callable[[], None]
+_LOGGER = logging.getLogger(__name__)
 
 
 def _utc_now() -> datetime:
@@ -63,6 +72,9 @@ class AupuCoordinator:
         self._state_stale = True
         self._last_confirmed_at: datetime | None = None
         self._wss: AupuShadowWebSocket | None = None
+        self._device = device
+        self._discovery_observer: DiscoveryObserver | None = None
+        self._discovery_cancel: DiscoveryCancel | None = None
         if use_wss:
             if session is None or device is None:
                 raise ValueError("WSS runtime dependencies are required")
@@ -74,8 +86,8 @@ class AupuCoordinator:
                 user_uuid=user_uuid,
                 async_connection_changed=self.async_apply_wss_connection,
                 async_auth_failed=self.async_handle_wss_auth_failure,
-                parse_shadow=lambda topic, payload: parse_shadow_update(device, topic, payload),
-                async_shadow_update=self.async_apply_shadow_update,
+                parse_shadow=lambda topic, payload: parse_accepted_shadow(device, topic, payload),
+                async_shadow_message=self.async_apply_shadow_message,
             )
             self._wss_missing_user_uuid = user_uuid is None
         else:
@@ -100,6 +112,16 @@ class AupuCoordinator:
     def wss_healthy(self) -> bool:
         """Return whether the current WSS session received a PINGRESP."""
         return self._wss_healthy
+
+    @property
+    def discovery_available(self) -> bool:
+        """Return whether a read-only discovery snapshot can be sent now."""
+        return (
+            not self._stopped
+            and not self._reauth_requested
+            and self._wss is not None
+            and self._wss_connected
+        )
 
     @property
     def last_error_code(self) -> str:
@@ -146,6 +168,17 @@ class AupuCoordinator:
             self._wss_healthy = False
             self._state_stale = True
             self._listeners.clear()
+            self._discovery_observer = None
+            self._discovery_cancel = None
+
+    async def async_request_shadow_get(self, client_token: str) -> None:
+        """Send one read-only snapshot request through the existing WSS."""
+        if not self.discovery_available or self._wss is None:
+            raise HomeAssistantError("discovery_wss_unavailable")
+        try:
+            await self._wss.async_request_shadow_get(client_token)
+        except (AupuError, aiohttp.ClientError, RuntimeError, TimeoutError):
+            raise HomeAssistantError("discovery_wss_unavailable") from None
 
     async def async_set_light(self, is_on: bool) -> None:
         """Send exactly one control call after enforcing the local auth gate."""
@@ -211,12 +244,51 @@ class AupuCoordinator:
         )
 
     @callback
+    def async_apply_shadow_message(self, message: AcceptedShadow) -> None:
+        """Apply formal light state before isolating optional discovery work."""
+        if self._device is None:
+            return
+        update = parse_light_shadow_update(self._device, message)
+        if update is not None:
+            self.async_apply_shadow_update(update)
+        observer = self._discovery_observer
+        if observer is None:
+            return
+        try:
+            observer(message)
+        except Exception:  # noqa: BLE001 - discovery must not affect formal state
+            _LOGGER.error("AUPU discovery observer failed")
+
+    @callback
+    def async_set_discovery_observer(
+        self,
+        observer: DiscoveryObserver,
+        cancel: DiscoveryCancel,
+    ) -> Callable[[], None]:
+        """Attach the sole active discovery observer and return its remover."""
+        if self._discovery_observer is not None:
+            raise HomeAssistantError("discovery_busy")
+        self._discovery_observer = observer
+        self._discovery_cancel = cancel
+
+        @callback
+        def remove() -> None:
+            if self._discovery_observer is observer:
+                self._discovery_observer = None
+                self._discovery_cancel = None
+
+        return remove
+
+    @callback
     def async_apply_wss_connection(self, connected: bool, healthy: bool) -> None:
         """Update WSS availability without clearing or reversing the light state."""
         self._wss_connected = connected
         self._wss_healthy = connected and healthy
         if not connected:
             self._state_stale = True
+            cancel = self._discovery_cancel
+            if cancel is not None:
+                cancel()
         for listener in tuple(self._listeners):
             listener()
 
@@ -224,6 +296,9 @@ class AupuCoordinator:
     def async_handle_wss_auth_failure(self) -> None:
         """Route transport authentication failure through the one-shot Reauth gate."""
         self._last_error_code = AupuAuthError.error_code
+        cancel = self._discovery_cancel
+        if cancel is not None:
+            cancel()
         self._request_reauth_once()
 
     @callback

@@ -99,6 +99,85 @@
       }
     }
   },
+  "services": {
+    "start_discovery": {
+      "name": "开始只读发现",
+      "description": "获取一次带关联标识的只读 Shadow 基线快照。",
+      "fields": {
+        "config_entry_id": {
+          "name": "配置条目",
+          "description": "要观察的已加载奥普 Q360 配置条目。"
+        }
+      }
+    },
+    "begin_discovery_step": {
+      "name": "开始发现步骤",
+      "description": "获取操作前快照，并开始观察一个受控面板实验。",
+      "fields": {
+        "config_entry_id": {
+          "name": "配置条目",
+          "description": "要观察的已加载奥普 Q360 配置条目。"
+        },
+        "capability": {
+          "name": "能力标签",
+          "description": "本次实验使用的受控能力标签。"
+        },
+        "target": {
+          "name": "目标标签",
+          "description": "本次实验选择的受控目标标签。"
+        },
+        "round": {
+          "name": "轮次",
+          "description": "本次实验的第一轮或第二轮。"
+        }
+      }
+    },
+    "complete_discovery_step": {
+      "name": "完成发现步骤",
+      "description": "获取操作后快照，并只保留有界的脱敏变化。",
+      "fields": {
+        "config_entry_id": {
+          "name": "配置条目",
+          "description": "要观察的已加载奥普 Q360 配置条目。"
+        }
+      }
+    },
+    "finish_discovery": {
+      "name": "完成只读发现",
+      "description": "校验并原子保存最新脱敏报告。",
+      "fields": {
+        "config_entry_id": {
+          "name": "配置条目",
+          "description": "要观察的已加载奥普 Q360 配置条目。"
+        }
+      }
+    },
+    "cancel_discovery": {
+      "name": "取消只读发现",
+      "description": "清除活动内存会话，但不替换上一份报告。",
+      "fields": {
+        "config_entry_id": {
+          "name": "配置条目",
+          "description": "要观察的已加载奥普 Q360 配置条目。"
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "discovery_wss_unavailable": {"message": "只读状态通道不可用。"},
+    "discovery_busy": {"message": "已有只读发现会话正在运行。"},
+    "discovery_snapshot_timeout": {"message": "关联 Shadow 快照等待超时。"},
+    "discovery_invalid_transition": {"message": "当前发现状态不允许此操作。"},
+    "discovery_step_expired": {"message": "当前发现步骤已超时。"},
+    "discovery_session_expired": {"message": "只读发现会话已超时。"},
+    "discovery_resource_limit": {"message": "当前步骤超过脱敏变化上限。"},
+    "discovery_report_save_failed": {"message": "脱敏报告保存失败。"},
+    "discovery_ready_for_step": {"message": "基线已就绪，可以开始受控步骤。"},
+    "discovery_ready_for_panel_action": {"message": "请只操作一个面板变量，等待 15 至 30 秒后完成步骤。"},
+    "discovery_step_recorded": {"message": "脱敏发现步骤已记录。"},
+    "discovery_report_saved": {"message": "脱敏发现报告已保存。"},
+    "discovery_cancelled": {"message": "活动发现会话已取消。"}
+  },
   "issues": {
     "jwt_expiring": {
       "title": "奥普 Token 即将过期",

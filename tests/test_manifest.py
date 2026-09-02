@@ -100,7 +100,14 @@ def test_english_and_simplified_chinese_flow_keys_match(project_root: Path) -> N
     translation = _load_json(project_root / "custom_components/aupu_q360/translations/zh-Hans.json")
 
     assert _key_tree(translation) == _key_tree(strings)
-    assert set(strings) == {"config", "options", "issues", "entity"}
+    assert set(strings) == {
+        "config",
+        "options",
+        "issues",
+        "entity",
+        "services",
+        "exceptions",
+    }
     config = strings["config"]
     options = strings["options"]
     assert isinstance(config, dict)
@@ -141,6 +148,68 @@ def test_english_and_simplified_chinese_flow_keys_match(project_root: Path) -> N
     assert set(options["abort"]) == {"invalid_state", "invalid_entry"}
     assert strings["entity"]["binary_sensor"]["state_channel"]["name"] == "State channel"
     assert translation["entity"]["binary_sensor"]["state_channel"]["name"] == "状态通道"
+
+
+def test_discovery_actions_have_fixed_ui_schemas_and_translations(project_root: Path) -> None:
+    """Catch free-text experiments or a discovery action missing from one locale."""
+    expected_services = {
+        "start_discovery",
+        "begin_discovery_step",
+        "complete_discovery_step",
+        "finish_discovery",
+        "cancel_discovery",
+    }
+    expected_exceptions = {
+        "discovery_wss_unavailable",
+        "discovery_busy",
+        "discovery_snapshot_timeout",
+        "discovery_invalid_transition",
+        "discovery_step_expired",
+        "discovery_session_expired",
+        "discovery_resource_limit",
+        "discovery_report_save_failed",
+        "discovery_ready_for_step",
+        "discovery_ready_for_panel_action",
+        "discovery_step_recorded",
+        "discovery_report_saved",
+        "discovery_cancelled",
+    }
+    strings = _load_json(project_root / "custom_components/aupu_q360/strings.json")
+    translation = _load_json(project_root / "custom_components/aupu_q360/translations/zh-Hans.json")
+    services = _load_yaml(project_root / "custom_components/aupu_q360/services.yaml")
+
+    assert set(services) == expected_services
+    assert set(strings["services"]) == expected_services
+    assert set(strings["exceptions"]) == expected_exceptions
+    assert _key_tree(translation) == _key_tree(strings)
+    for name, service in services.items():
+        assert isinstance(service, dict)
+        fields = service["fields"]
+        assert fields["config_entry_id"] == {
+            "required": True,
+            "selector": {"config_entry": {"integration": DOMAIN}},
+        }
+        if name != "begin_discovery_step":
+            assert set(fields) == {"config_entry_id"}
+    begin_fields = services["begin_discovery_step"]["fields"]
+    assert begin_fields["capability"]["selector"]["select"]["options"] == [
+        "heating",
+        "ventilation",
+        "drying",
+        "swing",
+        "fan_level",
+        "timer",
+        "idle_environment",
+    ]
+    assert begin_fields["target"]["selector"]["select"]["options"] == [
+        "off",
+        "on",
+        "level_1",
+        "level_2",
+        "level_3",
+    ]
+    assert begin_fields["round"]["selector"]["select"]["options"] == [1, 2]
+    assert not re.search(r"\b[0-9]{9,}\b", json.dumps(services))
 
 
 def test_readme_documents_safe_offline_install_and_operations(project_root: Path) -> None:

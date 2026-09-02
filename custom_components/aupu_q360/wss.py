@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import re
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
@@ -24,17 +26,18 @@ from .mqtt_codec import (
     encode_publish,
     encode_subscribe,
 )
-from .shadow import LightShadowUpdate
+from .shadow import AcceptedShadow
 
 _WSS_ENDPOINT = "wss://aii5h05kuofsj.ats.iot.cn-north-1.amazonaws.com.cn/mqtt"
 _RETRY_DELAYS = (2.0, 4.0, 8.0, 16.0, 30.0)
 _KEEP_ALIVE_SECONDS = 30
 _PINGRESP_TIMEOUT_SECONDS = 10
 _MAX_WSS_PACKET_BYTES = 64 * 1024
+_DISCOVERY_TOKEN = re.compile(r"disc-[0-9a-f]{32}")
 _LOGGER = logging.getLogger(__name__)
 
 ConnectionCallback = Callable[[bool, bool], None]
-ShadowParser = Callable[[str, bytes], LightShadowUpdate | None]
+ShadowParser = Callable[[str, bytes], AcceptedShadow | None]
 
 
 class AupuShadowWebSocket:
@@ -51,7 +54,7 @@ class AupuShadowWebSocket:
         async_connection_changed: ConnectionCallback,
         async_auth_failed: Callable[[], None],
         parse_shadow: ShadowParser,
-        async_shadow_update: Callable[[LightShadowUpdate], None],
+        async_shadow_message: Callable[[AcceptedShadow], None],
         clock_ms: Callable[[], int] | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
@@ -63,11 +66,13 @@ class AupuShadowWebSocket:
         self._async_connection_changed = async_connection_changed
         self._async_auth_failed = async_auth_failed
         self._parse_shadow = parse_shadow
-        self._async_shadow_update = async_shadow_update
+        self._async_shadow_message = async_shadow_message
         self._clock_ms = clock_ms or _unix_milliseconds
         self._sleep = sleep
         self._runner_task: asyncio.Task[None] | None = None
         self._ready_in_attempt = False
+        self._active_websocket: aiohttp.ClientWebSocketResponse | None = None
+        self._send_lock = asyncio.Lock()
 
     @property
     def is_running(self) -> bool:
@@ -97,6 +102,24 @@ class AupuShadowWebSocket:
         finally:
             if self._runner_task is task:
                 self._runner_task = None
+
+    async def async_request_shadow_get(self, client_token: str) -> None:
+        """Send one correlated Shadow get only on the current ready connection."""
+        if not isinstance(client_token, str) or _DISCOVERY_TOKEN.fullmatch(client_token) is None:
+            raise AupuProtocolError
+        websocket = self._active_websocket
+        if websocket is None:
+            raise AupuProtocolError
+        payload = json.dumps({"clientToken": client_token}, separators=(",", ":")).encode("utf-8")
+        async with self._send_lock:
+            if websocket is not self._active_websocket:
+                raise AupuProtocolError
+            await websocket.send_bytes(
+                encode_publish(
+                    f"$aws/things/{self._device.did}/shadow/get",
+                    payload,
+                )
+            )
 
     def _runner_done(self, task: asyncio.Task[None]) -> None:
         """Release the completed task reference and consume unexpected task errors."""
@@ -188,6 +211,7 @@ class AupuShadowWebSocket:
                     b"{}",
                 )
             )
+            self._active_websocket = websocket
             self._async_connection_changed(True, False)
             ping_task = asyncio.create_task(
                 self._ping_loop(websocket, ping), name="aupu_q360_wss_ping"
@@ -206,6 +230,8 @@ class AupuShadowWebSocket:
             for task in done:
                 await task
         finally:
+            if self._active_websocket is websocket:
+                self._active_websocket = None
             background = tuple(task for task in (ping_task, receive_task) if task is not None)
             for task in background:
                 task.cancel()
@@ -231,7 +257,8 @@ class AupuShadowWebSocket:
             await self._sleep(_KEEP_ALIVE_SECONDS)
             ping.start()
             self._async_connection_changed(True, False)
-            await websocket.send_bytes(encode_pingreq())
+            async with self._send_lock:
+                await websocket.send_bytes(encode_pingreq())
             await self._wait_for_pingresp(ping)
 
     async def _wait_for_pingresp(self, ping: _PingTracker) -> None:
@@ -268,9 +295,9 @@ class AupuShadowWebSocket:
                 continue
             if packet.packet_type is not PacketType.PUBLISH or packet.topic is None:
                 raise AupuProtocolError
-            update = self._parse_shadow(packet.topic, packet.payload)
-            if update is not None:
-                self._async_shadow_update(update)
+            message = self._parse_shadow(packet.topic, packet.payload)
+            if message is not None:
+                self._async_shadow_message(message)
 
 
 async def _receive_packet(

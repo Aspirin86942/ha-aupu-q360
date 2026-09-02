@@ -30,6 +30,7 @@ from custom_components.aupu_q360.config_flow import (
     AupuOptionsFlow,
 )
 from custom_components.aupu_q360.const import DOMAIN
+from custom_components.aupu_q360.discovery import StateDiscoverySession
 from custom_components.aupu_q360.errors import AupuProtocolError, AupuTemporaryError
 from custom_components.aupu_q360.models import ApiResponse, AupuRuntimeData
 from custom_components.aupu_q360.signer import AppAuthorizationSigner
@@ -50,6 +51,38 @@ SYNTHETIC_SIGNER = {
 }
 
 _TEST_LOOP = asyncio.new_event_loop()
+
+
+class _NoopStore:
+    """Keep pure lifecycle tests independent from HA's filesystem manager."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+
+    async def async_load(self) -> None:
+        return None
+
+    async def async_save(self, data: object) -> None:
+        del data
+
+    async def async_remove(self) -> None:
+        return None
+
+
+@pytest.fixture(autouse=True)
+def _isolate_ha_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    def ignore_issue(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+
+    monkeypatch.setattr("custom_components.aupu_q360.discovery_store.Store", _NoopStore)
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.coordinator.ir.async_create_issue",
+        ignore_issue,
+    )
+    monkeypatch.setattr(
+        "custom_components.aupu_q360.coordinator.ir.async_delete_issue",
+        ignore_issue,
+    )
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -190,6 +223,11 @@ class FakeConfigEntries:
         assert self.entry is not None and self.entry.entry_id == entry_id
         return cast(ConfigEntry[Any], self.entry)
 
+    def async_get_entry(self, entry_id: str) -> ConfigEntry[Any] | None:
+        if self.entry is None or self.entry.entry_id != entry_id:
+            return None
+        return cast(ConfigEntry[Any], self.entry)
+
     def async_update_entry(
         self,
         entry: ConfigEntry[Any],
@@ -251,12 +289,52 @@ class FakeConfigEntries:
         return self.unload_result
 
 
+class FakeServiceRegistry:
+    """Record integration service lifecycle without invoking HA internals."""
+
+    def __init__(self) -> None:
+        self.handlers: dict[tuple[str, str], object] = {}
+
+    def async_register(
+        self,
+        domain: str,
+        service: str,
+        handler: object,
+        schema: object,
+        supports_response: object,
+    ) -> None:
+        del schema, supports_response
+        self.handlers[(domain, service)] = handler
+
+    def async_remove(self, domain: str, service: str) -> None:
+        self.handlers.pop((domain, service), None)
+
+
+class FakeBus:
+    """Retain only removable one-shot listener registrations."""
+
+    def __init__(self) -> None:
+        self.listeners: list[tuple[str, object]] = []
+
+    def async_listen_once(self, event_type: str, listener: object) -> Callable[[], None]:
+        item = (event_type, listener)
+        self.listeners.append(item)
+
+        def remove() -> None:
+            if item in self.listeners:
+                self.listeners.remove(item)
+
+        return remove
+
+
 @dataclass
 class FakeHass:
     """Minimal Home Assistant boundary for direct flow-step calls."""
 
     config_entries: FakeConfigEntries
-    data: object | None = None
+    data: dict[str, object] = field(default_factory=dict)
+    services: FakeServiceRegistry = field(default_factory=FakeServiceRegistry)
+    bus: FakeBus = field(default_factory=FakeBus)
 
     def __post_init__(self) -> None:
         self.config_entries.hass = cast(HomeAssistant, self)
@@ -662,7 +740,7 @@ def test_loaded_options_update_reloads_runtime_once(
     assert entry.runtime_data is not old_runtime
     assert entry.runtime_data.credential.authorization_header == f"Bearer {replacement}"
     assert len(entry.update_listeners) == 1
-    assert len(entry.unload_callbacks) == 1
+    assert len(entry.unload_callbacks) == 2
 
 
 def test_options_enabling_wss_waits_for_confirmation(
@@ -1077,7 +1155,13 @@ def test_setup_builds_runtime_and_forwards_light_without_network(
     assert isinstance(entry.runtime_data.signer, AppAuthorizationSigner)
     assert entry.runtime_data.device.did == "123456789"
     assert entry.runtime_data.credential.authorization_header.startswith("Bearer ")
+    assert isinstance(entry.runtime_data.discovery_session, StateDiscoverySession)
+    assert entry.runtime_data.stoppers == [
+        entry.runtime_data.discovery_session,
+        entry.runtime_data.coordinator,
+    ]
     assert hass.config_entries.forwarded == (Platform.LIGHT, Platform.BINARY_SENSOR)
+    assert len(hass.services.handlers) == 5
 
 
 class Stopper:
