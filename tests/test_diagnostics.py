@@ -257,7 +257,7 @@ def test_coordinator_exposes_only_fixed_diagnostic_state() -> None:
         async_request_reauth=lambda: None,
     )
 
-    coordinator.async_apply_light_state(is_on=True, confirmed=False)
+    coordinator.async_apply_light_state(is_on=True)
     assert coordinator.light_state_source == "unknown"
     coordinator.async_apply_shadow_update(
         LightShadowUpdate(is_on=False, confirmed=True, source="reported")

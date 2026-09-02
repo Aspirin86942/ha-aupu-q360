@@ -167,7 +167,7 @@ class AupuCoordinator:
             self._last_error_code = exc.error_code
             raise HomeAssistantError("Light control failed") from None
 
-        self.async_apply_light_state(is_on=is_on, confirmed=False, source="command")
+        self.async_apply_light_state(is_on=is_on, source="command")
 
     @callback
     def _request_reauth_once(self) -> None:
@@ -182,29 +182,31 @@ class AupuCoordinator:
         self,
         *,
         is_on: bool,
-        confirmed: bool,
         source: LightStateSource = "unknown",
     ) -> None:
         """Apply desired or physically confirmed state and notify entities."""
+        confirmed = source in ("reported", "get_reported")
+        confirmed_at: datetime | None = None
+        if confirmed:
+            candidate = self._now()
+            if candidate.tzinfo is None or candidate.utcoffset() is None:
+                raise ValueError("State clock must return an aware datetime")
+            confirmed_at = candidate.astimezone(UTC)
+
         self._is_on = is_on
         self._assumed_state = not confirmed
         self._light_state_source = source
         self._state_stale = not confirmed
-        if confirmed:
-            confirmed_at = self._now()
-            if confirmed_at.tzinfo is None or confirmed_at.utcoffset() is None:
-                raise ValueError("State clock must return an aware datetime")
-            self._last_confirmed_at = confirmed_at.astimezone(UTC)
+        if confirmed_at is not None:
+            self._last_confirmed_at = confirmed_at
         for listener in tuple(self._listeners):
             listener()
 
     @callback
     def async_apply_shadow_update(self, update: LightShadowUpdate) -> None:
         """Apply only reported sources as physical confirmation."""
-        confirmed = update.source in ("reported", "get_reported")
         self.async_apply_light_state(
             is_on=update.is_on,
-            confirmed=confirmed,
             source=update.source,
         )
 

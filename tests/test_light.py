@@ -225,7 +225,7 @@ def test_remote_auth_failure_triggers_reauth_once_without_changing_state(
     api = FakeApi()
     reauth_requests: list[None] = []
     coordinator = _coordinator(api, reauth_requests=reauth_requests)
-    coordinator.async_apply_light_state(is_on=False, confirmed=True)
+    coordinator.async_apply_light_state(is_on=False, source="reported")
     api.failure = AupuAuthError()
 
     with pytest.raises(ConfigEntryAuthFailed):
@@ -264,18 +264,18 @@ def test_confirmed_state_notifies_entity_and_removal_unsubscribes(
     entity = RecordingLight(coordinator)
     _run(entity.async_added_to_hass())
 
-    coordinator.async_apply_light_state(is_on=True, confirmed=False)
+    coordinator.async_apply_light_state(is_on=True, source="command")
     assert entity.is_on is True
     assert entity.assumed_state is True
     assert entity.writes == 1
 
-    coordinator.async_apply_light_state(is_on=False, confirmed=True)
+    coordinator.async_apply_light_state(is_on=False, source="reported")
     assert entity.is_on is False
     assert entity.assumed_state is False
     assert entity.writes == 2
 
     _run(entity.async_will_remove_from_hass())
-    coordinator.async_apply_light_state(is_on=True, confirmed=True)
+    coordinator.async_apply_light_state(is_on=True, source="reported")
     assert entity.writes == 2
 
 
@@ -306,7 +306,7 @@ def test_shadow_source_and_disconnect_preserve_confirmed_state(
     assert coordinator.last_confirmed_at == confirmed_at
     assert coordinator.light_state_source == "reported"
 
-    coordinator.async_apply_light_state(is_on=False, confirmed=False, source="command")
+    coordinator.async_apply_light_state(is_on=False, source="command")
     assert coordinator.state_stale is True
     assert coordinator.last_confirmed_at == confirmed_at
 
@@ -348,19 +348,39 @@ def test_confirmed_shadow_sources_refresh_confirmation_time(source: str) -> None
     assert coordinator.last_confirmed_at == confirmed_at
 
 
-@pytest.mark.parametrize("source", ["desired", "command"])
+@pytest.mark.parametrize("source", ["unknown", "desired", "command"])
 def test_unconfirmed_sources_keep_last_confirmation_time(source: str) -> None:
-    """Catch desired or command states overwriting the last physical confirmation."""
+    """Catch an untrusted source clearing stale or overwriting confirmation evidence."""
     confirmed_at = datetime(2026, 9, 2, 1, 2, 3, tzinfo=UTC)
     coordinator = _coordinator(FakeApi(), now=lambda: confirmed_at)
     coordinator.async_apply_shadow_update(
         LightShadowUpdate(is_on=True, confirmed=True, source="reported")
     )
 
-    coordinator.async_apply_light_state(is_on=False, confirmed=False, source=source)
+    coordinator.async_apply_light_state(is_on=False, source=source)
 
     assert coordinator.state_stale is True
     assert coordinator.last_confirmed_at == confirmed_at
+
+
+def test_naive_confirmation_clock_leaves_prior_state_and_listeners_unchanged() -> None:
+    """Catch a rejected state-clock value partially overwriting trusted state."""
+    confirmed_at = datetime(2026, 9, 2, 1, 2, 3, tzinfo=UTC)
+    naive_at = confirmed_at.replace(second=4, tzinfo=None)
+    clock_values = iter([confirmed_at, naive_at])
+    coordinator = _coordinator(FakeApi(), now=lambda: next(clock_values))
+    coordinator.async_apply_light_state(is_on=True, source="reported")
+    notifications: list[None] = []
+    coordinator.async_add_listener(lambda: notifications.append(None))
+
+    with pytest.raises(ValueError, match="State clock must return an aware datetime"):
+        coordinator.async_apply_light_state(is_on=False, source="reported")
+
+    assert coordinator.is_on is True
+    assert coordinator.light_state_source == "reported"
+    assert coordinator.state_stale is False
+    assert coordinator.last_confirmed_at == confirmed_at
+    assert notifications == []
 
 
 def test_stop_marks_state_stale_without_discarding_light_evidence() -> None:
