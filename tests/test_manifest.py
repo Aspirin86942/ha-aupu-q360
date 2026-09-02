@@ -155,7 +155,7 @@ def test_discovery_actions_have_fixed_ui_schemas_and_translations(project_root: 
     expected_services = {
         "start_discovery",
         "begin_discovery_step",
-        "complete_discovery_step",
+        "advance_discovery_step",
         "finish_discovery",
         "cancel_discovery",
     }
@@ -168,9 +168,22 @@ def test_discovery_actions_have_fixed_ui_schemas_and_translations(project_root: 
         "discovery_session_expired",
         "discovery_resource_limit",
         "discovery_report_save_failed",
+        "discovery_raw_archive_unavailable",
+        "discovery_raw_archive_failed",
+        "discovery_raw_archive_limit",
+        "discovery_invalid_parameter",
+        "discovery_restore_required",
+        "discovery_manual_restore_required",
+        "discovery_invalid_payload",
         "discovery_ready_for_step",
-        "discovery_ready_for_panel_action",
-        "discovery_step_recorded",
+        "discovery_prompt_mode_on",
+        "discovery_prompt_mode_restore",
+        "discovery_prompt_carrier_on",
+        "discovery_prompt_parameter_change",
+        "discovery_prompt_parameter_restore",
+        "discovery_prompt_carrier_off",
+        "discovery_prompt_idle_observation",
+        "discovery_cycle_recorded",
         "discovery_report_saved",
         "discovery_cancelled",
     }
@@ -189,26 +202,48 @@ def test_discovery_actions_have_fixed_ui_schemas_and_translations(project_root: 
             "required": True,
             "selector": {"config_entry": {"integration": DOMAIN}},
         }
-        if name != "begin_discovery_step":
+        if name not in {"start_discovery", "begin_discovery_step"}:
             assert set(fields) == {"config_entry_id"}
+    start_fields = services["start_discovery"]["fields"]
+    assert set(start_fields) == {"config_entry_id", "all_modes_off_confirmed"}
+    assert start_fields["all_modes_off_confirmed"] == {
+        "required": True,
+        "selector": {"boolean": {}},
+    }
     begin_fields = services["begin_discovery_step"]["fields"]
-    assert begin_fields["capability"]["selector"]["select"]["options"] == [
-        "heating",
+    assert set(begin_fields) == {
+        "config_entry_id",
+        "experiment",
+        "round",
+        "source_level",
+        "target_level",
+        "source_temperature",
+        "target_temperature",
+    }
+    assert begin_fields["experiment"]["selector"]["select"]["options"] == [
+        "ai_thermostatic_warmth",
+        "deodorization_sterilization",
         "ventilation",
-        "drying",
-        "swing",
-        "fan_level",
-        "timer",
+        "air_blowing",
+        "normal_drying",
+        "thermostatic_drying",
+        "night_light",
+        "global_fan_level",
+        "ai_target_temperature",
         "idle_environment",
     ]
-    assert begin_fields["target"]["selector"]["select"]["options"] == [
-        "off",
-        "on",
-        "level_1",
-        "level_2",
-        "level_3",
-    ]
     assert begin_fields["round"]["selector"]["select"]["options"] == ["1", "2"]
+    for field in ("source_level", "target_level"):
+        assert begin_fields[field] == {
+            "required": False,
+            "selector": {"number": {"min": 1, "max": 5, "step": 1, "mode": "box"}},
+        }
+    for field in ("source_temperature", "target_temperature"):
+        assert begin_fields[field] == {
+            "required": False,
+            "selector": {"number": {"min": 30, "max": 42, "step": 1, "mode": "box"}},
+        }
+    assert "complete_discovery_step" not in services
     assert not re.search(r"\b[0-9]{9,}\b", json.dumps(services))
 
 

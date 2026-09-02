@@ -5,6 +5,10 @@ start_discovery:
       selector:
         config_entry:
           integration: aupu_q360
+    all_modes_off_confirmed:
+      required: true
+      selector:
+        boolean: {}
 begin_discovery_step:
   fields:
     config_entry_id:
@@ -12,28 +16,21 @@ begin_discovery_step:
       selector:
         config_entry:
           integration: aupu_q360
-    capability:
+    experiment:
       required: true
       selector:
         select:
           options:
-            - heating
+            - ai_thermostatic_warmth
+            - deodorization_sterilization
             - ventilation
-            - drying
-            - swing
-            - fan_level
-            - timer
+            - air_blowing
+            - normal_drying
+            - thermostatic_drying
+            - night_light
+            - global_fan_level
+            - ai_target_temperature
             - idle_environment
-    target:
-      required: true
-      selector:
-        select:
-          options:
-            - "off"
-            - "on"
-            - level_1
-            - level_2
-            - level_3
     round:
       required: true
       selector:
@@ -41,7 +38,39 @@ begin_discovery_step:
           options:
             - "1"
             - "2"
-complete_discovery_step:
+    source_level:
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 5
+          step: 1
+          mode: box
+    target_level:
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 5
+          step: 1
+          mode: box
+    source_temperature:
+      required: false
+      selector:
+        number:
+          min: 30
+          max: 42
+          step: 1
+          mode: box
+    target_temperature:
+      required: false
+      selector:
+        number:
+          min: 30
+          max: 42
+          step: 1
+          mode: box
+advance_discovery_step:
   fields:
     config_entry_id:
       required: true
