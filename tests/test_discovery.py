@@ -558,7 +558,7 @@ async def test_cancel_and_transport_failure_report_only_evidence_based_restore_r
 
 @pytest.mark.asyncio
 async def test_snapshot_stage_and_session_timeouts_release_all_owned_work() -> None:
-    """Catch any fixed deadline leaving observer, timer, token, or sanitizer state alive."""
+    """Catch any fixed deadline leaving observer, task, token, or sanitizer state alive."""
     snapshot = DiscoveryHarness(snapshot_timeout=0.01, session_timeout=1)
     with pytest.raises(DiscoverySnapshotTimeoutError):
         await snapshot.session.async_start(all_modes_off_confirmed=True)

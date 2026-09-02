@@ -1,27 +1,45 @@
-# Q360 只读状态发现运行手册
+# Q360 面板状态发现 v2 运行手册
 
-本手册用于一次性识别 Q360 `reported` 状态中的候选字段。发现会话复用集成已有的唯一
-AWS IoT WSS 连接，只发送带关联令牌的 Shadow `get`；取暖、换气、烘干、摆风、档位和
-定时的实验动作全部由用户在奥普实体面板上手工完成，Home Assistant 不发送这些控制。
+本手册用于一次性识别 Q360 Shadow `reported` 中的面板状态候选。发现复用集成已有的唯一
+AWS IoT WSS 连接，只发送相关联的 Shadow `get`。所有模式、全局档位和 AI 目标温度操作均由
+操作者在实体面板上完成；Home Assistant 不会替操作者开启、关闭、切换或恢复任何面板功能。
 
-发现结果只是脱敏候选报告，不会修改 Config Entry、自动创建实体或启用新的控制能力。
-原始 HAR、SAZ、PCAP 或 Shadow 报文不是运行依赖，也不得放入 Git、诊断分享或操作记录。
+结果是 schema 2 脱敏候选报告，不会修改 Config Entry、自动创建实体或启用新控制。
+`desired`、Action 阶段、用户陈述和命令结果都不是确认状态。正常流程不需要 HAR、SAZ、PCAP，
+也不得把任何原始发现内容放入 Git、HA 诊断、聊天或公开制品。
 
-## 授权阶段
+## 独立授权门
 
-下面四个阶段彼此独立，完成前一阶段不代表后续阶段已经获准：
+下列操作互不授权，必须在每一步执行前重新检查现场状态并取得当前明确授权：
 
-1. Linux 开发 checkout 本地验证；
-2. 获得明确授权后，将已验证的组件文件同步到 HA `/config`；
-3. 再次获得明确授权后，重启 HA 并做原有功能烟测；
-4. 再次获得明确授权后，连接真实 Q360 并执行发现会话。
+1. 审查本地提交，以及分别授权合并和推送；
+2. 创建宿主机私有目录；
+3. 备份并修改 Compose，加入固定 bind mount；
+4. 同步组件到实际 HA `/config/custom_components`；
+5. 重建或重启 Home Assistant 容器并做无发现烟测；
+6. 操作者在实体面板旁时，执行真实面板会话。
 
-本地 Git 仓库必须与 HA `/config` 分离。提交、推送、Release、同步、重启和真实会话也分别
-需要明确授权。
+完成本地测试或前一个授权门不代表后一个授权门已获准。不要把本功能部署与凭据轮换、HA
+升级、无关 Compose 清理或档案删除合并执行。
 
-## 阶段一：Linux 本地验证
+## 私有原始档案边界
 
-在开发 checkout 中执行：
+原始档案是可选项，默认关闭。它只使用以下固定位置，不接受用户输入路径：
+
+- 宿主机根目录：`/home/george/.local/state/ha-aupu-q360/raw-discovery/`
+- Home Assistant 容器根目录：`/var/lib/aupu-q360-private-discovery/`
+
+宿主机根目录和每个会话目录必须是 `0700`，档案与 manifest 文件必须是 `0600`。每个会话的
+编码 JSONL 上限为 64 MiB；达到上限即失败关闭，不轮转、不上传、不自动删除。Base64 只是编码，
+不是脱敏；解码后仍是原始私有数据。不要列出、打印、复制或分享 topic、payload、Base64 内容。
+
+启用选项但固定挂载缺失、权限错误或不可写时，`start_discovery` 会在任何发现请求前失败。
+HA Store 和 Diagnostics 只保存 schema 2 脱敏报告及允许的档案元数据，不保存文件路径或原始
+内容。删除 Config Entry 不会删除宿主机档案；宿主机档案只能按单独授权的保留策略处理。
+
+## 本地实施验证
+
+在隔离的 Linux checkout 中运行：
 
 ```bash
 uv sync --locked
@@ -33,85 +51,150 @@ uv run python scripts/verify_private_signer.py
 uv run python scripts/check_no_secrets.py
 AUPU_RUN_HA_RUNTIME=1 uv run --group ha-test pytest tests/ha_runtime -m ha_runtime -v
 git diff --check
-git status --short
 ```
 
-这些测试使用合成凭据、内存 WSS 和本地 HA runtime，不应访问真实 DNS、云账号、短信服务或
-浴霸。全部通过只证明程序边界正确，不证明真实字段语义。
+这些测试使用合成凭据、内存 WSS、临时档案目录和本地 HA runtime。全部通过只证明本地程序
+边界成立，不证明真实字段语义，也不授权合并、推送、部署、重启或真实面板操作。
 
-## 阶段二：获授权后同步组件
+## 部署授权门操作要求
 
-同步前重新确认精确的 checkout、提交版本、HA 容器、`/config` 挂载和现有组件目录。只同步
-`custom_components/aupu_q360` 中经过验证的组件文件，不迁移 `.private/`、原始抓包、Cookie、
-证书、测试缓存或仓库根目录的私有配置材料。
+### 创建宿主机私有目录
 
-同步应采用可恢复流程：先建立候选目录并核对允许文件的清单与哈希，再保留现有 live 目录
-作为备份，最后在同一文件系统内换名。同步后只运行 HA 配置检查；成功时停止，并明确报告
-“文件已同步，但运行中的 HA 尚未加载新代码”。本阶段不包含重启授权。
+获得授权后，先解析精确路径并证明它不在仓库、HA `/config` 或 HA 备份目录内；拒绝符号链接，
+再以 `0700` 创建并核对类型、权限和所有者。不要预先创建任何会话子目录，也不要读取已有档案。
 
-如果配置检查失败，保留失败候选，恢复备份并再次检查。不要用递归删除、`rsync --delete`
-或直接覆盖 live 目录。
+### 修改 Compose
 
-## 阶段三：获授权后重启与烟测
+获得独立授权后，重新定位实际 Compose 项目和 HA 服务。保留权限、所有者与哈希可核对的备份，
+只为 HA 服务加入一个读写挂载：
 
-重启前确认阶段二的 live 文件哈希仍与已验证 checkout 一致。获得独立重启授权后，重启 HA，
-并核验：
+```yaml
+- /home/george/.local/state/ha-aupu-q360/raw-discovery:/var/lib/aupu-q360-private-discovery:rw
+```
 
-- HA 恢复运行且版本未意外变化；
-- `AUPU Q360` Config Entry 正常加载；
-- 原照明实体和 WSS connectivity 状态通道无回归；
-- 没有固定鉴权、协议或 runtime 错误。
+运行 `docker compose config --quiet` 并核对解析后的 source、target 和读写模式后停止。Compose
+解析成功不授权同步组件或重建容器。
 
-本阶段不得自动开始发现，也不得调用浴霸控制。若出现启动回归，先恢复备份并通过配置检查；
-再次重启到旧版本仍需新的重启授权。
+### 同步组件
 
-## 阶段四：获授权后执行真实会话
+获得独立授权后，只从已验证提交的 `custom_components/aupu_q360` 构造候选目录。排除缓存、
+测试、Git 元数据、Config Entry 材料和所有档案；核对源与候选 SHA-256 清单。保留 live 组件的
+同文件系统可恢复备份，并通过原子目录换名同步。不要递归删除，也不要使用 `rsync --delete`。
+
+同步后运行 HA 配置检查。失败时恢复备份并重新检查；成功时也只报告“文件已同步，运行中的
+HA 尚未加载新代码”。
+
+### 重建或重启 Home Assistant 容器
+
+获得独立授权后，重新核对 live 文件哈希和 Compose 固定挂载，只重建实际 Home Assistant
+服务，不升级镜像、不操作无关容器。恢复后确认 HA 版本未变化、Config Entry 已加载、原照明
+实体与 connectivity 实体正常、WSS 状态语义无回归、固定挂载可见且权限正确。
+
+烟测期间原始档案选项必须保持关闭，不得创建会话目录或开始发现。部署成功不授权执行真实
+面板会话。
+
+## 固定实验目录
+
+真实会话只接受以下十个实验标签：
+
+| 实验 | 含义 | 固定手工流程 |
+| --- | --- | --- |
+| `ai_thermostatic_warmth` | AI 恒温暖模式 | 开启，再关闭并目视确认 |
+| `deodorization_sterilization` | 除臭除菌模式 | 开启，再关闭并目视确认 |
+| `ventilation` | 换气模式 | 开启，再关闭并目视确认 |
+| `air_blowing` | 吹风模式 | 开启，再关闭并目视确认 |
+| `normal_drying` | 普通干燥模式 | 开启，再关闭并目视确认 |
+| `thermostatic_drying` | 恒温干燥模式 | 开启，再关闭并目视确认 |
+| `night_light` | 小夜灯模式 | 开启，再关闭并目视确认 |
+| `global_fan_level` | 共享全局档位 `1..5` | 固定以换气模式为载体 |
+| `ai_target_temperature` | AI 目标温度 `30..42` | 固定以 AI 恒温暖为载体 |
+| `idle_environment` | 全部模式关闭时的静置环境 | 不操作面板 |
+
+七个模式、静置环境、全局档位的四个非源目标、以及同一对相邻温度都必须各完成 round 1 和
+round 2。不得猜测不存在的档位，不得换用其他载体，也不得在一个阶段同时操作多个变量。
+
+## 执行真实面板会话
 
 ### 会话前检查
 
-- 运行中的组件文件哈希与已验证版本一致；
-- WSS 已启用，connectivity 状态通道可用；
-- 取暖、换气、烘干、摆风、档位和定时均处于关闭基线；
-- 操作者已准备只改变实体面板上的一个变量；
-- 已按私有材料标准备份 Config Entry，备份不进入 Git、聊天或 shell 输出。
+只有在取得本授权门的当前授权，且操作者位于实体面板旁时才继续：
 
-在 Home Assistant“开发者工具 → 操作”中选择对应 Config Entry。先调用
-`aupu_q360.start_discovery`。它会发送一次只读 Shadow `get`；只有返回
-`discovery_ready_for_step` 才继续。10 秒内没有取得相关快照时停止，不连续重试。
+- 运行组件哈希和固定挂载均已复核；
+- WSS 已启用，connectivity 实体可用；
+- 私下记录原始全局档位和原始 AI 目标温度，不在聊天或日志中输出；
+- 目视确认七个模式全部关闭；
+- 如需原始档案，先在 Options 启用；这次 reload 不得自动开始发现；
+- 准备在每次面板操作后等待 15–30 秒，并在 120 秒阶段期限内调用下一次 Action。
 
-### 单步固定顺序
+在“开发者工具 → 操作”中选择目标 Config Entry。调用 `aupu_q360.start_discovery`，并把
+`all_modes_off_confirmed` 设为 `true`。只有响应 `discovery_ready_for_step` 才可继续；10 秒内
+没有相关快照或返回任何其他错误时立即停止。
 
-每一个实验步骤都严格执行：
+### 静置环境两轮
 
-1. 调用 `aupu_q360.begin_discovery_step`，选择 `capability`、`target` 和 `round`；
-2. 等待返回 `discovery_ready_for_panel_action`；
-3. 只在浴霸实体面板改变这一个目标变量；
-4. 等待 15–30 秒，不操作其他功能；
-5. 调用 `aupu_q360.complete_discovery_step`；
-6. 只有返回 `discovery_step_recorded` 才进入下一步。
+对 `idle_environment` 的 round 1、round 2 分别执行：
 
-`heating`、`ventilation`、`drying`、`swing` 和 `timer` 都执行两轮：每轮先完成 `on`，再完成
-`off` 并确认实体面板恢复关闭基线。
+1. 调用 `aupu_q360.begin_discovery_step`；
+2. 保持面板不变，等待 15–30 秒；
+3. 调用 `aupu_q360.advance_discovery_step`；
+4. 只有 `discovery_cycle_recorded` 才进入下一轮。
 
-`fan_level` 只测试实体面板实际存在的 `level_1`、`level_2`、`level_3`。每个可见档位做两轮，
-每次档位观察后用 `target=off` 的步骤恢复基线；不存在的档位不猜测、不操作。
+### 七个模式各两轮
 
-`idle_environment` 仅使用 `target=off`，在全部功能关闭时观察两轮，期间不改变面板。温度、
-湿度、功率等数值没有独立语义证据时只能作为未识别变化，不能根据数值范围猜测字段含义。
+对每个模式标签的 round 1、round 2 分别执行：
 
-### 完成、取消与报告
+1. begin 后等待 `discovery_prompt_mode_on`；
+2. 只在实体面板开启该模式，等待后 advance；
+3. 等待 `discovery_prompt_mode_restore`，只关闭该模式并目视确认；
+4. 再次 advance；只有 `discovery_cycle_recorded` 才进入下一周期。
 
-所有可靠步骤结束且当前没有活动步骤时，调用 `aupu_q360.finish_discovery`。成功响应只返回受控
-计数，不返回报告正文；随后下载该 Config Entry 的 Home Assistant 诊断查看脱敏报告。
+夜灯会影响现有照明状态路径，但仍只按同一手工恢复规则操作。软件快照不会替代面板目视确认。
 
-发生误操作、多个变量同时变化、断线、超时或资源限制时，调用
-`aupu_q360.cancel_discovery`。取消只清理当前内存会话，不覆盖上一次成功保存的报告。只有
-`finish_discovery` 完成全部校验并原子保存后，最新报告才会替换旧报告。卸载集成保留报告，
-删除 Config Entry 才清除对应报告。
+### 全局档位矩阵
 
-下载后先确认报告不含设备/Entry/实体标识、凭据、手机号、完整 Topic、client token、原始
-字符串或原始 Shadow。任何命中都应停止分享和字段解释，回到本地缺陷修复流程。
+以私下记录的原始档位作为 `source_level`，将 `1..5` 中其他四个值依次作为 `target_level`，
+每个目标做两轮：
 
-`confirmed_candidate` 也只是待人工确认的候选。`ambiguous`、`observed_unidentified`、
-`not_observed` 和 `invalid` 不得映射成正式实体。任何正式只读实体都需要另行规格、实现、测试
-与授权。
+1. begin 后手工开启换气，advance；
+2. 把档位从 source 改为 target，advance；
+3. 恢复原始全局档位，advance；
+4. 手工关闭换气并目视确认，advance。
+
+每轮都必须依次收到 carrier、parameter change、parameter restore、carrier off 的固定提示，
+最终只接受 `discovery_cycle_recorded`。
+
+### AI 目标温度两轮
+
+以私下记录的原始温度作为 `source_temperature`，选择同一个合法相邻值作为
+`target_temperature`：源值为 `30` 时用 `31`，源值为 `42` 时用 `41`，其他值固定选择一个相邻
+方向，两轮不得反向或换目标。
+
+1. begin 后手工开启 AI 恒温暖，advance；
+2. 把温度从 source 改为 target，advance；
+3. 恢复原始 AI 目标温度，advance；
+4. 手工关闭 AI 恒温暖并目视确认，advance。
+
+### 恢复不确定与停止条件
+
+收到 `discovery_restore_required` 时，不得开始新实验。保持同一阶段，纠正实体面板状态并目视
+确认，然后再次调用 `aupu_q360.advance_discovery_step`。软件不会发送恢复命令。
+
+发生超时、断线、鉴权错误、档案错误、资源限制、取消，或收到
+`discovery_manual_restore_required` 时，停止软件收集并检查：七个模式均已关闭、已恢复原始全局
+档位、已恢复原始 AI 目标温度。不要根据 Action 阶段推断设备已经恢复。
+
+需要主动停止时调用 `aupu_q360.cancel_discovery`。取消不会覆盖上一次成功报告，也不会删除已
+接受的私有档案内容。
+
+### 完成与本地核验
+
+只有会话回到 ready 且没有待恢复阶段时，调用 `aupu_q360.finish_discovery`。成功响应只返回固定
+计数；随后在 Diagnostics 中确认报告 `schema_version` 为 `2`、敏感扫描通过、覆盖状态与预期
+一致。Diagnostics 不应出现设备标识、Entry 标识、原始 topic/payload、令牌、Base64 或路径。
+
+如已启用档案，只在宿主机本地核对会话目录/文件权限、manifest 状态、事件数、编码字节数和
+SHA-256；不得显示文件内容。删除 Config Entry 后，脱敏 Store 报告会被删除，但宿主机档案仍
+按独立保留策略存在。
+
+`confirmed_candidate` 仍只是候选。`ambiguous`、`observed_unidentified`、`not_observed` 和
+`invalid` 不得映射为正式实体。任何正式只读实体都需要另行规格、实现、测试和部署授权。

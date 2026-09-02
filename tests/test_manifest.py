@@ -13,7 +13,7 @@ import yaml
 
 DOMAIN = "aupu_q360"
 NAME = "AUPU Q360"
-VERSION = "0.1.1"
+VERSION = "0.2.0"
 REPOSITORY_URL = "https://github.com/Aspirin86942/ha-aupu-q360"
 
 
@@ -48,14 +48,21 @@ def test_manifest_is_hacs_installable(project_root: Path) -> None:
     """Expose accidental metadata regressions before HACS installs the integration."""
     manifest = _load_json(project_root / "custom_components/aupu_q360/manifest.json")
     hacs = _load_json(project_root / "hacs.json")
-    pyproject = (project_root / "pyproject.toml").read_text(encoding="utf-8")
+    pyproject_text = (project_root / "pyproject.toml").read_text(encoding="utf-8")
+    pyproject = tomllib.loads(pyproject_text)
+    lock = tomllib.loads((project_root / "uv.lock").read_text(encoding="utf-8"))
+    constants = (project_root / "custom_components/aupu_q360/const.py").read_text(encoding="utf-8")
 
     assert manifest["domain"] == DOMAIN
     assert manifest["name"] == NAME
     assert manifest["version"] == VERSION
     assert hacs["name"] == manifest["name"]
-    assert 'name = "aupu-q360-ha"' in pyproject
-    assert f'version = "{manifest["version"]}"' in pyproject
+    assert pyproject["project"]["name"] == "aupu-q360-ha"
+    assert pyproject["project"]["version"] == VERSION
+    assert f'INTEGRATION_VERSION = "{VERSION}"' in constants
+    root_package = next(package for package in lock["package"] if package["name"] == "aupu-q360-ha")
+    assert root_package["version"] == VERSION
+    assert root_package["source"] == {"virtual": "."}
     assert manifest["config_flow"] is True
     assert manifest["iot_class"] == "cloud_push"
     assert manifest["integration_type"] == "device"
@@ -251,6 +258,72 @@ def test_discovery_actions_have_fixed_ui_schemas_and_translations(project_root: 
         }
     assert "complete_discovery_step" not in services
     assert not re.search(r"\b[0-9]{9,}\b", json.dumps(services))
+
+
+def test_v2_discovery_docs_match_the_read_only_operator_contract(project_root: Path) -> None:
+    """Catch versioned operator docs regaining v1 actions or unsafe deployment shortcuts."""
+    readme = (project_root / "README.md").read_text(encoding="utf-8")
+    runbook = (project_root / "docs/q360-read-only-discovery-runbook.md").read_text(
+        encoding="utf-8"
+    )
+    services = _load_yaml(project_root / "custom_components/aupu_q360/services.yaml")
+    expected_services = {
+        "start_discovery",
+        "begin_discovery_step",
+        "advance_discovery_step",
+        "finish_discovery",
+        "cancel_discovery",
+    }
+
+    assert set(services) == expected_services
+    for document in (readme, runbook):
+        assert "advance_discovery_step" in document
+        assert "complete_discovery_step" not in document
+        assert "Home Assistant 不会" in document
+        for forbidden_control in (
+            "light.turn_on",
+            "switch.turn_on",
+            "number.set_value",
+            "select.select_option",
+            "set_light",
+            "CONTROL_PATH",
+            "shadow/update",
+        ):
+            assert forbidden_control not in document
+
+    for experiment in (
+        "ai_thermostatic_warmth",
+        "deodorization_sterilization",
+        "ventilation",
+        "air_blowing",
+        "normal_drying",
+        "thermostatic_drying",
+        "night_light",
+        "global_fan_level",
+        "ai_target_temperature",
+        "idle_environment",
+    ):
+        assert experiment in readme
+
+    compact_runbook = re.sub(r"\s+", "", runbook)
+    for required_boundary in (
+        "/home/george/.local/state/ha-aupu-q360/raw-discovery/",
+        "/var/lib/aupu-q360-private-discovery/",
+        "0700",
+        "0600",
+        "64 MiB",
+        "schema 2",
+        "恢复原始全局档位",
+        "恢复原始 AI 目标温度",
+        "创建宿主机私有目录",
+        "修改 Compose",
+        "同步组件",
+        "重建或重启 Home Assistant 容器",
+        "执行真实面板会话",
+        "Base64 只是编码，不是脱敏",
+        "删除 Config Entry 不会删除宿主机档案",
+    ):
+        assert re.sub(r"\s+", "", required_boundary) in compact_runbook
 
 
 def test_readme_documents_safe_offline_install_and_operations(project_root: Path) -> None:

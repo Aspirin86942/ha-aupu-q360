@@ -69,16 +69,29 @@ Repair，控制会在凭据失效时停止。`jwt_expiring` 只是提前告警�
 
 ## 只读状态发现
 
-启用且连接 WSS 后，可通过五个 `aupu_q360` Action 执行一次性的只读字段发现：
-`start_discovery`、`begin_discovery_step`、`complete_discovery_step`、`finish_discovery` 和
-`cancel_discovery`。发现会话只在现有 WSS 通道发送相关联的 Shadow `get`，不会发送取暖、
-换气、烘干、摆风、档位或定时控制；这些单变量实验必须由用户在奥普实体面板手工操作，
-Home Assistant 不会代为操作。
+启用且连接 WSS 后，可通过五个 `aupu_q360` Action 执行一次性的 v2 只读字段发现：
+`start_discovery`、`begin_discovery_step`、`advance_discovery_step`、`finish_discovery` 和
+`cancel_discovery`。发现复用现有 WSS 连接且只发送相关联的 Shadow `get`；Home Assistant 不会
+开启、关闭或设置面板模式、档位与温度。只有目标设备 Shadow `reported` 是确认状态，
+`desired`、操作阶段和用户陈述都不会被当作成功证据。
 
-每个能力需要按 begin → 面板单变量操作 → 等待 15–30 秒 → complete 的顺序完成两轮开启和
-关闭，最后 finish 并下载集成诊断。取消会清理当前内存会话，但不会覆盖上一次成功报告。
-报告只包含脱敏候选，不会自动修改配置或创建实体；候选字段进入正式映射前仍需人工确认和
-独立设计。原始 HAR、SAZ、PCAP 或 Shadow 报文不是运行依赖。
+固定实验目录包含十个标签：
+
+- 七个独立模式：`ai_thermostatic_warmth`、`deodorization_sterilization`、`ventilation`、
+  `air_blowing`、`normal_drying`、`thermostatic_drying`、`night_light`；
+- 共享全局档位：`global_fan_level`，合法值为 `1..5`，固定以 `ventilation` 为载体；
+- AI 目标温度：`ai_target_temperature`，合法值为 `30..42`，固定以
+  `ai_thermostatic_warmth` 为载体；
+- 静置环境：`idle_environment`。
+
+每个 begin 先取得步骤基线，之后由用户按返回的固定提示在实体面板手工操作，再用 advance
+取得下一阶段快照；模式、档位目标和温度实验各做两轮，并在每轮内人工恢复原状态。取消只
+清理本次软件会话，不会发恢复命令，也不会覆盖上一次成功报告。
+
+Options 中的本机私有原始发现档案默认关闭，只能使用管理员预先配置的固定挂载；启用但挂载
+不可用时，会在发送发现请求前失败。无论是否保留原始档案，HA Store 和诊断都只包含通过
+schema 2 校验与敏感扫描的脱敏报告。报告不会自动修改配置、创建实体或启用新控制；候选字段
+进入正式映射前仍需另行设计、测试和授权。原始 HAR、SAZ、PCAP 不是正常发现流程的运行依赖。
 
 完整的授权阶段、实验矩阵、异常停止条件和报告审查要求见
 [Q360 只读状态发现运行手册](docs/q360-read-only-discovery-runbook.md)。

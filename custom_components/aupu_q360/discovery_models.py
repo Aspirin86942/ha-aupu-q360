@@ -35,13 +35,10 @@ class DiscoveryState(StrEnum):
     IDLE = "idle"
     ARCHIVE_OPENING = "archive_opening"
     SESSION_BASELINING = "session_baselining"
-    BASELINING = "baselining"
     READY = "ready"
     STEP_BASELINING = "step_baselining"
     AWAITING_OPERATOR = "awaiting_operator"
     RESTORE_REQUIRED = "restore_required"
-    OBSERVING = "observing"
-    STEP_FINALIZING = "step_finalizing"
     FINALIZING = "finalizing"
     CANCELLED = "cancelled"
 
@@ -137,28 +134,6 @@ class DiscoveryProgress:
         return response
 
 
-class DiscoveryCapability(StrEnum):
-    """Controlled experiment capability labels."""
-
-    HEATING = "heating"
-    VENTILATION = "ventilation"
-    DRYING = "drying"
-    SWING = "swing"
-    FAN_LEVEL = "fan_level"
-    TIMER = "timer"
-    IDLE_ENVIRONMENT = "idle_environment"
-
-
-class DiscoveryTarget(StrEnum):
-    """Controlled target labels accepted by discovery actions."""
-
-    OFF = "off"
-    ON = "on"
-    LEVEL_1 = "level_1"
-    LEVEL_2 = "level_2"
-    LEVEL_3 = "level_3"
-
-
 @dataclass(frozen=True, slots=True)
 class SanitizedValue:
     """One comparable in-memory value with a separately safe public form."""
@@ -174,32 +149,6 @@ class ScanResult:
 
     passed: bool
     finding_count: int
-
-
-@dataclass(frozen=True, slots=True)
-class StepLabel:
-    """Controlled experiment label suitable for stable report identifiers."""
-
-    capability: DiscoveryCapability
-    target: DiscoveryTarget
-    round: DiscoveryRound
-
-    def __init__(
-        self,
-        capability: DiscoveryCapability | str,
-        target: DiscoveryTarget | str,
-        round: int,
-    ) -> None:
-        object.__setattr__(self, "capability", DiscoveryCapability(capability))
-        object.__setattr__(self, "target", DiscoveryTarget(target))
-        if round not in (1, 2):
-            raise ValueError("invalid discovery round")
-        object.__setattr__(self, "round", round)
-
-    @property
-    def evidence_id(self) -> str:
-        """Return the fixed, secret-free identifier used in candidate evidence."""
-        return f"{self.capability.value}:{self.target.value}:{self.round}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,28 +286,3 @@ class RestorationResult:
     restored_paths: frozenset[str]
     unrestored_paths: frozenset[str]
     required: bool
-
-
-@dataclass(frozen=True, slots=True)
-class StepEvidence:
-    """Bounded, sanitized evidence retained after one experiment step."""
-
-    label: StepLabel
-    snapshot_succeeded: bool
-    baseline_restored: bool | None
-    changes: tuple[SanitizedChange, ...]
-    invalid: bool = False
-    timed_out: bool = False
-
-    def to_public(self) -> JsonObject:
-        """Serialize only controlled labels and sanitized changes."""
-        return {
-            "capability": self.label.capability.value,
-            "target": self.label.target.value,
-            "round": self.label.round,
-            "snapshot_succeeded": self.snapshot_succeeded,
-            "baseline_restored": self.baseline_restored,
-            "invalid": self.invalid,
-            "timed_out": self.timed_out,
-            "changes": [change.to_public() for change in self.changes],
-        }

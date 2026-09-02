@@ -634,7 +634,7 @@ def test_schema_rejects_structure_count_and_archive_mutations(mutation) -> None:
         "raw-payload-marker",
         "raw-topic-marker",
         "raw-desired-marker",
-        "Bearer synthetic-sensitive-marker",
+        "Bearer " + "synthetic-sensitive-marker",
         "/home/george/private",
         "/var/lib/aupu-q360-private-discovery",
         "synthetic-device-identifier",

@@ -6,6 +6,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
+from custom_components.aupu_q360 import discovery_models
 from custom_components.aupu_q360.discovery_catalog import (
     AI_TARGET_TEMPERATURES,
     EXPERIMENT_CATALOG,
@@ -34,6 +35,17 @@ _MODE_NAMES = (
     "thermostatic_drying",
     "night_light",
 )
+
+
+def test_v1_model_surface_is_not_exported() -> None:
+    """Catch removed capability/target APIs surviving beside the v2 catalog."""
+    for name in (
+        "DiscoveryCapability",
+        "DiscoveryTarget",
+        "StepLabel",
+        "StepEvidence",
+    ):
+        assert not hasattr(discovery_models, name)
 
 
 def test_catalog_has_the_fixed_order_ranges_and_carriers() -> None:
@@ -305,6 +317,17 @@ def test_progress_response_contains_only_the_fixed_public_fields() -> None:
 
 def test_controlled_enum_and_prompt_values_match_the_v2_contract() -> None:
     """Catch report coverage or operator prompt values drifting from the fixed API."""
+    assert tuple(item.value for item in DiscoveryState) == (
+        "idle",
+        "archive_opening",
+        "session_baselining",
+        "ready",
+        "step_baselining",
+        "awaiting_operator",
+        "restore_required",
+        "finalizing",
+        "cancelled",
+    )
     assert tuple(item.value for item in DiscoveryCoverage) == (
         "not_started",
         "partial",

@@ -101,7 +101,7 @@ def test_diagnostics_build_only_the_allowed_scalar_whitelist(
     result = _run(async_get_config_entry_diagnostics(None, cast(Any, entry)))
 
     assert result == {
-        "integration_version": "0.1.1",
+        "integration_version": "0.2.0",
         "authentication_expiry_bucket": ">=7d",
         "wss_enabled": True,
         "wss_connected": True,
@@ -136,7 +136,7 @@ def test_unloaded_and_incomplete_runtime_keep_the_same_whitelist(
     ]
 
     expected = {
-        "integration_version": "0.1.1",
+        "integration_version": "0.2.0",
         "authentication_expiry_bucket": "unknown",
         "wss_enabled": False,
         "wss_connected": False,
@@ -187,7 +187,7 @@ def test_diagnostics_fold_secret_bearing_attribute_and_time_errors_to_defaults(
     ]
 
     expected = {
-        "integration_version": "0.1.1",
+        "integration_version": "0.2.0",
         "authentication_expiry_bucket": "unknown",
         "wss_enabled": False,
         "wss_connected": False,
@@ -227,7 +227,7 @@ def test_diagnostics_include_only_the_validated_latest_discovery_report(
     from custom_components.aupu_q360.discovery_analysis import build_discovery_report
 
     report = build_discovery_report(
-        integration_version="0.1.1",
+        integration_version="0.2.0",
         started_at=datetime(2026, 9, 2, 13, 47, tzinfo=UTC),
         wss_baseline_succeeded=True,
         archive=RawArchiveMetadata(
@@ -287,7 +287,7 @@ def test_diagnostics_revalidate_fake_store_and_hide_raw_markers(
 
     sentinel = "synthetic-private-raw-marker"
     report = build_discovery_report(
-        integration_version="0.1.1",
+        integration_version="0.2.0",
         started_at=datetime(2026, 9, 2, 13, 47, tzinfo=UTC),
         wss_baseline_succeeded=True,
         cycles=(),

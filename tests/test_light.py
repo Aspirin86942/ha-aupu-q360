@@ -498,7 +498,7 @@ def test_discovery_observer_failure_cannot_block_light_or_expose_details(
 def test_discovery_get_recorder_reaches_the_existing_wss_connection() -> None:
     """Catch coordinator routing that drops the raw recorder or creates another transport."""
     coordinator = _coordinator(FakeApi())
-    token = "disc-0123456789abcdef0123456789abcdef"
+    correlation_id = "disc-0123456789abcdef0123456789abcdef"
     recorded: list[RawShadowEvent] = []
 
     class FakeWss:
@@ -518,9 +518,9 @@ def test_discovery_get_recorder_reaches_the_existing_wss_connection() -> None:
     coordinator._wss = cast(Any, transport)
     coordinator.async_apply_wss_connection(True, False)
 
-    _run(coordinator.async_request_shadow_get(token, recorded.append))
+    _run(coordinator.async_request_shadow_get(correlation_id, recorded.append))
 
-    assert transport.calls == [(token, recorded.append)]
+    assert transport.calls == [(correlation_id, recorded.append)]
     assert recorded == [RawShadowEvent("outgoing", "synthetic-topic", b"synthetic")]
 
 
