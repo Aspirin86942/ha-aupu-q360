@@ -49,7 +49,7 @@ _BEGIN_SCHEMA = vol.Schema(
             tuple(capability.value for capability in DiscoveryCapability)
         ),
         vol.Required("target"): vol.In(tuple(target.value for target in DiscoveryTarget)),
-        vol.Required("round"): vol.In((1, 2)),
+        vol.Required("round"): vol.All(vol.Coerce(int), vol.In((1, 2))),
     },
     extra=vol.PREVENT_EXTRA,
 )

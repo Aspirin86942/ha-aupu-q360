@@ -39,8 +39,8 @@ begin_discovery_step:
       selector:
         select:
           options:
-            - 1
-            - 2
+            - "1"
+            - "2"
 complete_discovery_step:
   fields:
     config_entry_id:

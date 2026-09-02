@@ -9,6 +9,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import aiohttp
@@ -21,6 +22,8 @@ from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.restore_state import ATTR_RESTORED
+from homeassistant.helpers.service import _SERVICES_SCHEMA
+from homeassistant.util.yaml import load_yaml_dict
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.aupu_q360.api import AupuApiClient, WssCredentials
@@ -240,6 +243,20 @@ async def _queue_shadow_update(
         )
     )
     await hass.async_block_till_done()
+
+
+def test_services_yaml_matches_home_assistant_runtime_schema() -> None:
+    """Catch invalid service selectors hiding every Q360 action description."""
+    services_path = Path(__file__).parents[2] / "custom_components/aupu_q360/services.yaml"
+    descriptions = _SERVICES_SCHEMA(load_yaml_dict(str(services_path)))
+
+    assert set(descriptions) == {
+        "start_discovery",
+        "begin_discovery_step",
+        "complete_discovery_step",
+        "finish_discovery",
+        "cancel_discovery",
+    }
 
 
 async def test_real_flow_managers_complete_user_options_and_manual_reauth(

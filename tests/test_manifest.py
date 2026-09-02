@@ -208,7 +208,7 @@ def test_discovery_actions_have_fixed_ui_schemas_and_translations(project_root: 
         "level_2",
         "level_3",
     ]
-    assert begin_fields["round"]["selector"]["select"]["options"] == [1, 2]
+    assert begin_fields["round"]["selector"]["select"]["options"] == ["1", "2"]
     assert not re.search(r"\b[0-9]{9,}\b", json.dumps(services))
 
 

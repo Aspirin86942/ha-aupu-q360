@@ -184,6 +184,29 @@ async def test_services_register_once_route_by_entry_and_unregister_last() -> No
 
 
 @pytest.mark.asyncio
+async def test_begin_action_normalizes_ui_round_string_before_session() -> None:
+    """Catch the select field's string value being rejected or passed through."""
+    module = _module()
+    hass = FakeHass()
+    session = FakeSession()
+    hass.config_entries.entries["entry-one"] = _entry("entry-one", session)
+    module.async_register_discovery_entry(hass, "entry-one")
+
+    await _call(
+        hass,
+        module.BEGIN_DISCOVERY_STEP,
+        {
+            "config_entry_id": "entry-one",
+            "capability": "heating",
+            "target": "on",
+            "round": "2",
+        },
+    )
+
+    assert session.calls == [("begin", "heating", "on", 2)]
+
+
+@pytest.mark.asyncio
 async def test_all_action_responses_are_fixed_and_finish_returns_counts_only() -> None:
     """Catch raw report bodies or user data being echoed through service responses."""
     module = _module()
