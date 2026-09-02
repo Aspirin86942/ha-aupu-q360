@@ -73,7 +73,8 @@
         "data": {
           "token": "新的 Bearer JWT",
           "phone": "本地手机号（可选）",
-          "use_wss": "启用 WSS 确认状态"
+          "use_wss": "启用 WSS 确认状态",
+          "raw_archive_enabled": "启用本机私有原始发现档案（默认关闭；只使用管理员配置的固定容器挂载）"
         }
       },
       "confirm_wss": {

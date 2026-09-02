@@ -7,7 +7,7 @@ import logging
 import secrets
 from collections.abc import Awaitable, Callable, Collection, Mapping
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Protocol
 
 from .discovery_analysis import (
     background_paths,
@@ -860,26 +860,6 @@ class PanelStateDiscoverySession:
     def _cancel_task(task: asyncio.Task[None] | None) -> None:
         if task is not None and task is not asyncio.current_task():
             task.cancel()
-
-
-class StateDiscoverySession(PanelStateDiscoverySession):
-    """Temporary typed bridge for v1 callers removed by Tasks 7 and 8."""
-
-    async def async_start(self, *args: Any, **kwargs: Any) -> Any:
-        """Accept the old no-argument start only during incremental implementation."""
-        if not args and "all_modes_off_confirmed" not in kwargs:
-            kwargs["all_modes_off_confirmed"] = True
-        return await super().async_start(*args, **kwargs)
-
-    async def async_begin_step(self, *args: Any, **kwargs: Any) -> Any:
-        """Keep type checking stable until the v2 Action surface is installed."""
-        if len(args) == 1 and not kwargs and isinstance(args[0], DiscoveryStepRequest):
-            return await super().async_begin_step(args[0])
-        raise DiscoveryInvalidTransitionError
-
-    async def async_complete_step(self) -> DiscoveryProgress:
-        """Bridge the old completion name to one v2 catalog phase."""
-        return await self.async_advance_step()
 
 
 def _restorable_paths(changes: Collection[SanitizedChange]) -> set[str]:

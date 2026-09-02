@@ -73,7 +73,8 @@
         "data": {
           "token": "New Bearer JWT",
           "phone": "Local phone number (optional)",
-          "use_wss": "Enable WSS verified state"
+          "use_wss": "Enable WSS verified state",
+          "raw_archive_enabled": "Enable private raw discovery archive (off by default; uses only the administrator-mounted fixed container path)"
         }
       },
       "confirm_wss": {

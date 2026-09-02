@@ -27,6 +27,7 @@ _CONF_TOKEN = "token"
 _CONF_DID = "did"
 _CONF_TAG = "tag"
 _CONF_USE_WSS = "use_wss"
+_CONF_RAW_ARCHIVE_ENABLED = "raw_archive_enabled"
 _CONF_USER_UUID = "user_uuid"
 _CONF_PHONE = "phone"
 _CONF_METHOD = "method"
@@ -101,6 +102,10 @@ def _options_schema(current: AupuConfigEntryData) -> vol.Schema:
                 selector.TextSelectorConfig(type=selector.TextSelectorType.TEL)
             ),
             vol.Optional(_CONF_USE_WSS, default=current.use_wss): selector.BooleanSelector(),
+            vol.Optional(
+                _CONF_RAW_ARCHIVE_ENABLED,
+                default=current.raw_archive_enabled,
+            ): selector.BooleanSelector(),
         }
     )
 
@@ -190,6 +195,7 @@ def _parse_user_input(user_input: Mapping[str, Any]) -> AupuConfigEntryData:
             _CONF_DID: device.did,
             _CONF_TAG: device.tag,
             _CONF_USE_WSS: use_wss,
+            _CONF_RAW_ARCHIVE_ENABLED: False,
         },
         require_user_uuid=False,
     )
@@ -497,12 +503,17 @@ class AupuOptionsFlow(config_entries.OptionsFlow):
                 else _parse_phone(submitted_phone)
             )
             use_wss = user_input.get(_CONF_USE_WSS, current.use_wss)
+            raw_archive_enabled = user_input.get(
+                _CONF_RAW_ARCHIVE_ENABLED,
+                current.raw_archive_enabled,
+            )
             candidate = AupuConfigEntryData.from_mapping(
                 {
                     **current.as_mapping(),
                     _CONF_TOKEN: token,
                     _CONF_PHONE: phone,
                     _CONF_USE_WSS: use_wss,
+                    _CONF_RAW_ARCHIVE_ENABLED: raw_archive_enabled,
                     _CONF_USER_UUID: current.user_uuid,
                 },
                 require_user_uuid=False,

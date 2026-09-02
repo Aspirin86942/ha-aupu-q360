@@ -14,10 +14,12 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .api import AupuApiClient
 from .const import INTEGRATION_VERSION
 from .coordinator import AupuCoordinator
-from .discovery import StateDiscoverySession
-from .discovery_sanitizer import DiscoverySanitizer, validate_discovery_report
+from .discovery import PanelStateDiscoverySession
+from .discovery_report_schema import validate_discovery_report
+from .discovery_sanitizer import DiscoverySanitizer
 from .discovery_store import DiscoveryReportStore
 from .models import AupuConfigEntryData, AupuRuntimeData
+from .raw_discovery_archive import RawDiscoveryArchive
 from .services import async_register_discovery_entry, async_unregister_discovery_entry
 from .shadow import AcceptedShadow
 from .signer import AppAuthorizationSigner
@@ -89,6 +91,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry[AupuRuntimeD
             credential=credential,
             device=device,
         ),
+        raw_archive_enabled=config.raw_archive_enabled,
     )
     coordinator = AupuCoordinator(
         hass=hass,
@@ -131,7 +134,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry[AupuRuntimeD
         if remove is not None:
             remove()
 
-    discovery_session = StateDiscoverySession(
+    async def archive_factory(
+        on_failure: Callable[[str], None],
+    ) -> RawDiscoveryArchive:
+        return await RawDiscoveryArchive.async_open(on_failure)
+
+    discovery_session = PanelStateDiscoverySession(
         request_shadow_get=coordinator.async_request_shadow_get,
         save_report=discovery_store.async_save,
         sanitizer_factory=lambda key: DiscoverySanitizer(
@@ -143,6 +151,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry[AupuRuntimeD
         deactivate_observer=deactivate_observer,
         discovery_available=lambda: coordinator.discovery_available,
         integration_version=INTEGRATION_VERSION,
+        archive_factory=archive_factory if config.raw_archive_enabled else None,
     )
     entry.runtime_data.discovery_session = discovery_session
     entry.runtime_data.stoppers.extend((discovery_session, coordinator))

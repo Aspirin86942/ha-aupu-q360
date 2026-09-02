@@ -146,6 +146,12 @@ def test_english_and_simplified_chinese_flow_keys_match(project_root: Path) -> N
         "cannot_connect",
     }
     assert set(options["abort"]) == {"invalid_state", "invalid_entry"}
+    assert set(options["step"]["init"]["data"]) == {
+        "token",
+        "phone",
+        "use_wss",
+        "raw_archive_enabled",
+    }
     assert strings["entity"]["binary_sensor"]["state_channel"]["name"] == "State channel"
     assert translation["entity"]["binary_sensor"]["state_channel"]["name"] == "状态通道"
 
