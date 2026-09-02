@@ -9,7 +9,7 @@ from typing import Literal
 type JsonValue = str | int | float | bool | None | list[JsonValue] | dict[str, JsonValue]
 type JsonObject = dict[str, JsonValue]
 type ValueKind = Literal["boolean", "number", "null", "string", "timestamp", "object", "array"]
-type ComparisonValue = bool | int | float | str | None | tuple[str, int, int]
+type ComparisonValue = bool | int | float | None | tuple[str, str]
 type DiscoveryRound = Literal[1, 2]
 type ChangeDirection = Literal[
     "added",

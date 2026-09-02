@@ -28,6 +28,7 @@ _TIMESTAMP_MILLISECONDS_MAX = 4_102_444_800_000
 _MAX_STRUCTURE_DEPTH = 4
 _MAX_STRUCTURE_NODES = 256
 _MAX_NESTED_KEY_LENGTH = 64
+_MAX_PACKET_STRING_LENGTH = 65_536
 _FORBIDDEN_MARKERS = (
     "$aws/things/",
     "bearer ",
@@ -100,11 +101,13 @@ class DiscoverySanitizer:
             raise DiscoverySanitizationError
         if not isinstance(device_id, str) or not device_id:
             raise DiscoverySanitizationError
-        self._session_key = session_key
+        self._session_key: bytes | None = session_key
         self._device_id = device_id
 
     def sanitize_reported(self, state: object) -> dict[str, SanitizedValue]:
         """Return only aliased properties for the configured target device."""
+        if self._session_key is None:
+            raise DiscoverySanitizationError
         if not isinstance(state, dict):
             raise DiscoverySanitizationError
         if "reported" not in state:
@@ -133,6 +136,10 @@ class DiscoverySanitizer:
                 path = f"service/{service_id}/property/{property_id}"
                 result[path] = self._sanitize_value(value)
         return result
+
+    def close(self) -> None:
+        """Clear the session HMAC key and reject all later sanitization."""
+        self._session_key = None
 
     def has_target_reported(self, state: object) -> bool:
         """Return whether a full get contains the configured reported device root."""
@@ -173,21 +180,34 @@ class DiscoverySanitizer:
                     comparison=value,
                     public={"type": "timestamp", "precision": precision},
                 )
+            if -1000 <= value <= 1000:
+                return SanitizedValue(
+                    kind="number",
+                    comparison=value,
+                    public={"type": "number", "value": value},
+                )
+            canonical_number = json.dumps(
+                value,
+                allow_nan=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            fingerprint = self._fingerprint(canonical_number)
             return SanitizedValue(
                 kind="number",
-                comparison=value,
-                public={"type": "number", "value": value},
+                comparison=("number", fingerprint),
+                public={
+                    "type": "number",
+                    "representation": "fingerprint",
+                    "fingerprint": fingerprint,
+                },
             )
         if isinstance(value, str):
-            digest = hmac.new(
-                self._session_key,
-                value.encode("utf-8"),
-                hashlib.sha256,
-            ).hexdigest()[:16]
-            fingerprint = "h-" + "-".join(digest[index : index + 4] for index in range(0, 16, 4))
+            if len(value) > _MAX_PACKET_STRING_LENGTH:
+                raise DiscoverySanitizationError
+            fingerprint = self._fingerprint(value.encode("utf-8"))
             return SanitizedValue(
                 kind="string",
-                comparison=fingerprint,
+                comparison=("string", fingerprint),
                 public={
                     "type": "string",
                     "length": len(value),
@@ -196,13 +216,43 @@ class DiscoverySanitizer:
             )
         if isinstance(value, (dict, list)):
             kind: Literal["object", "array"] = "object" if isinstance(value, dict) else "array"
-            depth, elements = _structure_shape(value)
+            fingerprint, depth, elements = self._canonicalize_and_fingerprint(value)
             return SanitizedValue(
                 kind=kind,
-                comparison=(kind, depth, elements),
-                public={"type": kind, "depth": depth, "elements": elements},
+                comparison=(kind, fingerprint),
+                public={
+                    "type": kind,
+                    "depth": depth,
+                    "elements": elements,
+                    "fingerprint": fingerprint,
+                },
             )
         raise DiscoverySanitizationError
+
+    def _canonicalize_and_fingerprint(
+        self, value: dict[object, object] | list[object]
+    ) -> tuple[str, int, int]:
+        """Validate bounded JSON content and fingerprint its stable canonical bytes."""
+        depth, elements = _validate_structure(value)
+        try:
+            canonical = json.dumps(
+                value,
+                ensure_ascii=False,
+                sort_keys=True,
+                allow_nan=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        except (TypeError, ValueError, UnicodeEncodeError):
+            raise DiscoverySanitizationError from None
+        return self._fingerprint(canonical), depth, elements
+
+    def _fingerprint(self, value: bytes) -> str:
+        """Return one fixed-format HMAC or fail after the session is closed."""
+        session_key = self._session_key
+        if session_key is None:
+            raise DiscoverySanitizationError
+        digest = hmac.new(session_key, value, hashlib.sha256).hexdigest()[:16]
+        return "h-" + "-".join(digest[index : index + 4] for index in range(0, 16, 4))
 
 
 def validate_discovery_report(
@@ -386,7 +436,20 @@ def _validate_public_value_or_none(value: JsonValue) -> None:
     if value_type == "boolean":
         valid = set(value) == {"type", "value"} and type(value["value"]) is bool
     elif value_type == "number":
-        valid = set(value) == {"type", "value"} and _is_finite_number(value["value"])
+        number_value = value.get("value")
+        fingerprint = value.get("fingerprint")
+        valid = (
+            set(value) == {"type", "value"}
+            and isinstance(number_value, (int, float))
+            and not isinstance(number_value, bool)
+            and math.isfinite(number_value)
+            and -1000 <= number_value <= 1000
+        ) or (
+            set(value) == {"type", "representation", "fingerprint"}
+            and value.get("representation") == "fingerprint"
+            and isinstance(fingerprint, str)
+            and re.fullmatch(r"h-(?:[0-9a-f]{4}-){3}[0-9a-f]{4}", fingerprint) is not None
+        )
     elif value_type == "null":
         valid = set(value) == {"type", "occurrences"} and _is_bounded_int(
             value["occurrences"], 1, 256
@@ -405,10 +468,13 @@ def _validate_public_value_or_none(value: JsonValue) -> None:
             "milliseconds",
         )
     elif value_type in ("object", "array"):
+        fingerprint = value.get("fingerprint")
         valid = (
-            set(value) == {"type", "depth", "elements"}
+            set(value) == {"type", "depth", "elements", "fingerprint"}
             and _is_bounded_int(value["depth"], 1, 4)
             and _is_bounded_int(value["elements"], 1, 256)
+            and isinstance(fingerprint, str)
+            and re.fullmatch(r"h-(?:[0-9a-f]{4}-){3}[0-9a-f]{4}", fingerprint) is not None
         )
     else:
         valid = False
@@ -484,7 +550,7 @@ def _timestamp_precision(value: float) -> str | None:
     return None
 
 
-def _structure_shape(value: object) -> tuple[int, int]:
+def _validate_structure(value: object) -> tuple[int, int]:
     nodes = 0
 
     def visit(current: object, depth: int) -> int:
@@ -501,6 +567,16 @@ def _structure_shape(value: object) -> tuple[int, int]:
         elif isinstance(current, list):
             for nested in current:
                 maximum = max(maximum, visit(nested, depth + 1))
+        elif type(current) is bool or current is None:
+            pass
+        elif isinstance(current, (int, float)):
+            if not math.isfinite(current):
+                raise DiscoverySanitizationError
+        elif isinstance(current, str):
+            if len(current) > _MAX_PACKET_STRING_LENGTH:
+                raise DiscoverySanitizationError
+        else:
+            raise DiscoverySanitizationError
         return maximum
 
     depth = visit(value, 1)
