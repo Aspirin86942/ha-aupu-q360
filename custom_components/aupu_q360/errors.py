@@ -113,3 +113,21 @@ class DiscoveryReportSaveFailedError(DiscoveryError):
     """The final sanitized report could not atomically replace the prior one."""
 
     error_code = "discovery_report_save_failed"
+
+
+class DiscoveryRawArchiveUnavailableError(DiscoveryError):
+    """The fixed private archive mount is not safe and writable."""
+
+    error_code = "discovery_raw_archive_unavailable"
+
+
+class DiscoveryRawArchiveFailedError(DiscoveryError):
+    """The private archive could not retain an accepted event."""
+
+    error_code = "discovery_raw_archive_failed"
+
+
+class DiscoveryRawArchiveLimitError(DiscoveryError):
+    """The private archive reached its fixed encoded-byte limit."""
+
+    error_code = "discovery_raw_archive_limit"
