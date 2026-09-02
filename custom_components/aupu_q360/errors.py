@@ -131,3 +131,27 @@ class DiscoveryRawArchiveLimitError(DiscoveryError):
     """The private archive reached its fixed encoded-byte limit."""
 
     error_code = "discovery_raw_archive_limit"
+
+
+class DiscoveryInvalidParameterError(DiscoveryError):
+    """A v2 action parameter combination is outside the fixed catalog."""
+
+    error_code = "discovery_invalid_parameter"
+
+
+class DiscoveryRestoreRequiredError(DiscoveryError):
+    """Reported evidence has not restored the required experiment path."""
+
+    error_code = "discovery_restore_required"
+
+
+class DiscoveryManualRestoreRequiredError(DiscoveryError):
+    """Collection stopped while an observed panel change lacked restoration evidence."""
+
+    error_code = "discovery_manual_restore_required"
+
+
+class DiscoveryInvalidPayloadError(DiscoveryError):
+    """A target reported subtree cannot be safely sanitized."""
+
+    error_code = "discovery_invalid_payload"

@@ -200,10 +200,8 @@ def build_discovery_report(
     wss_baseline_succeeded: bool,
     archive: RawArchiveMetadata | None = None,
     cycles: Sequence[CycleEvidence] = (),
-    steps: Sequence[object] | None = None,
 ) -> JsonObject:
     """Build a deterministic schema-v2 report from sanitized phase evidence."""
-    del steps  # Temporary import compatibility until the v1 session is replaced in Task 6.
     ordered_cycles = tuple(
         sorted(
             cycles,
@@ -620,7 +618,7 @@ def _restoration_for_phase(
     return next(
         (
             restoration.restored
-            for phase in cycle.phases
+            for phase in reversed(cycle.phases)
             if phase.phase is phase_name and not phase.invalid and not phase.timed_out
             for restoration in phase.restorations
             if restoration.path == path

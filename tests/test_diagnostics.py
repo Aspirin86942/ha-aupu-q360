@@ -227,7 +227,7 @@ def test_diagnostics_include_only_the_validated_latest_discovery_report(
         integration_version="0.1.1",
         started_at=datetime(2026, 9, 2, 13, 47, tzinfo=UTC),
         wss_baseline_succeeded=True,
-        steps=(),
+        cycles=(),
     )
 
     class FakeReportStore:

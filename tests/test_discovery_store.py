@@ -23,7 +23,7 @@ def _report(version: str = "0.1.1") -> dict[str, Any]:
         integration_version=version,
         started_at=datetime(2026, 9, 2, 13, 47, tzinfo=UTC),
         wss_baseline_succeeded=True,
-        steps=(),
+        cycles=(),
     )
 
 

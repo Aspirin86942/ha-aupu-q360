@@ -37,6 +37,8 @@ _SENTINEL = object()
 _LOGGER = logging.getLogger(__name__)
 
 type ArchiveStatus = Literal["not_requested", "open", "complete", "incomplete"]
+type ArchiveExperiment = DiscoveryExperiment | Literal["session"]
+type ArchiveRound = DiscoveryRound | Literal[0]
 type FailureCallback = Callable[[str], None]
 type ArchiveQueueItem = bytes | object
 
@@ -50,18 +52,25 @@ def _utc_now() -> datetime:
 class ArchiveContext:
     """Controlled experiment labels attached to one raw archive event."""
 
-    experiment: DiscoveryExperiment
-    round: DiscoveryRound
+    experiment: ArchiveExperiment
+    round: ArchiveRound
     phase: DiscoveryPhase
 
     def __post_init__(self) -> None:
         """Reject free-form labels before they can enter the private archive."""
-        if (
-            not isinstance(self.experiment, DiscoveryExperiment)
-            or type(self.round) is not int
-            or self.round not in (1, 2)
-            or not isinstance(self.phase, DiscoveryPhase)
-        ):
+        session_context = (
+            self.experiment == "session"
+            and type(self.round) is int
+            and self.round == 0
+            and self.phase is DiscoveryPhase.SESSION_BASELINE
+        )
+        experiment_context = (
+            isinstance(self.experiment, DiscoveryExperiment)
+            and type(self.round) is int
+            and self.round in (1, 2)
+            and isinstance(self.phase, DiscoveryPhase)
+        )
+        if not session_context and not experiment_context:
             raise DiscoveryRawArchiveFailedError
 
 
@@ -285,7 +294,11 @@ class RawDiscoveryArchive:
         row = {
             "sequence": sequence,
             "recorded_at_utc": timestamp,
-            "experiment": context.experiment.value,
+            "experiment": (
+                context.experiment.value
+                if isinstance(context.experiment, DiscoveryExperiment)
+                else context.experiment
+            ),
             "round": context.round,
             "phase": context.phase.value,
             "direction": event.direction,
