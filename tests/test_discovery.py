@@ -14,7 +14,7 @@ from custom_components.aupu_q360.discovery_sanitizer import (
     DiscoverySanitizer,
     validate_discovery_report,
 )
-from custom_components.aupu_q360.shadow import AcceptedShadow
+from custom_components.aupu_q360.shadow import AcceptedShadow, RawShadowEvent
 
 _DEVICE_ID = "123456789012345"
 
@@ -123,11 +123,32 @@ class DiscoveryHarness:
         topic_kind: str = "get",
     ) -> None:
         assert self.observer is not None
-        self.observer(AcceptedShadow(topic_kind, state, token))
+        self.observer(
+            AcceptedShadow(
+                topic_kind,
+                state,
+                token,
+                raw_event=RawShadowEvent(
+                    "incoming",
+                    f"$aws/things/{_DEVICE_ID}/shadow/{topic_kind}/accepted",
+                    b"{}",
+                ),
+            )
+        )
 
     def update(self, state: dict[str, object]) -> None:
         assert self.observer is not None
-        self.observer(AcceptedShadow("update", state))
+        self.observer(
+            AcceptedShadow(
+                "update",
+                state,
+                raw_event=RawShadowEvent(
+                    "incoming",
+                    f"$aws/things/{_DEVICE_ID}/shadow/update/accepted",
+                    b"{}",
+                ),
+            )
+        )
 
 
 async def _start_ready(harness: DiscoveryHarness, state: dict[str, object]) -> None:

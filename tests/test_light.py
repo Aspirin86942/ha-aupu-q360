@@ -30,7 +30,7 @@ from custom_components.aupu_q360.errors import AupuAuthError, AupuTemporaryError
 from custom_components.aupu_q360.light import AupuLight
 from custom_components.aupu_q360.light import async_setup_entry as async_setup_light
 from custom_components.aupu_q360.models import ApiResponse, AupuRuntimeData, DeviceConfig
-from custom_components.aupu_q360.shadow import AcceptedShadow, LightShadowUpdate
+from custom_components.aupu_q360.shadow import AcceptedShadow, LightShadowUpdate, RawShadowEvent
 from custom_components.aupu_q360.wss import AupuShadowWebSocket
 
 _TEST_LOOP = asyncio.new_event_loop()
@@ -466,6 +466,8 @@ def test_discovery_observer_failure_cannot_block_light_or_expose_details(
     sentinel = "synthetic-private-observer-detail"
 
     def observe(message: AcceptedShadow) -> None:
+        assert coordinator.is_on is False
+        assert coordinator.light_state_source == "reported"
         observed.append(message)
         raise RuntimeError(sentinel)
 
@@ -474,6 +476,11 @@ def test_discovery_observer_failure_cannot_block_light_or_expose_details(
     message = AcceptedShadow(
         topic_kind="update",
         state={"reported": {device.did: {"2": {"properties": {"1": False}}}}},
+        raw_event=RawShadowEvent(
+            "incoming",
+            "$aws/things/123456789/shadow/update/accepted",
+            b'{"state":{"reported":{"123456789":{"2":{"properties":{"1":false}}}}}}',
+        ),
     )
 
     coordinator.async_apply_shadow_message(message)
@@ -486,6 +493,35 @@ def test_discovery_observer_failure_cannot_block_light_or_expose_details(
 
     coordinator.async_apply_wss_connection(False, False)
     assert cancelled == [None]
+
+
+def test_discovery_get_recorder_reaches_the_existing_wss_connection() -> None:
+    """Catch coordinator routing that drops the raw recorder or creates another transport."""
+    coordinator = _coordinator(FakeApi())
+    token = "disc-0123456789abcdef0123456789abcdef"
+    recorded: list[RawShadowEvent] = []
+
+    class FakeWss:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, Callable[[RawShadowEvent], None] | None]] = []
+
+        async def async_request_shadow_get(
+            self,
+            client_token: str,
+            record_outgoing: Callable[[RawShadowEvent], None] | None = None,
+        ) -> None:
+            self.calls.append((client_token, record_outgoing))
+            if record_outgoing is not None:
+                record_outgoing(RawShadowEvent("outgoing", "synthetic-topic", b"synthetic"))
+
+    transport = FakeWss()
+    coordinator._wss = cast(Any, transport)
+    coordinator.async_apply_wss_connection(True, False)
+
+    _run(coordinator.async_request_shadow_get(token, recorded.append))
+
+    assert transport.calls == [(token, recorded.append)]
+    assert recorded == [RawShadowEvent("outgoing", "synthetic-topic", b"synthetic")]
 
 
 @pytest.mark.parametrize(

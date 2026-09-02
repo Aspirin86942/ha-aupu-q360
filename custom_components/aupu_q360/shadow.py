@@ -20,12 +20,26 @@ class LightShadowUpdate:
 
 
 @dataclass(frozen=True, slots=True)
+class RawShadowEvent:
+    """One byte-exact target Shadow event whose content is always redacted in repr."""
+
+    direction: Literal["incoming", "outgoing"] = field(repr=False)
+    topic: str = field(repr=False)
+    payload: bytes = field(repr=False)
+
+    def __repr__(self) -> str:
+        """Return a fixed representation that cannot expose event content."""
+        return "RawShadowEvent(<redacted>)"
+
+
+@dataclass(frozen=True, slots=True)
 class AcceptedShadow:
     """One validated accepted Shadow message with private payload state."""
 
     topic_kind: Literal["get", "update"]
     state: dict[str, Any] = field(repr=False)
     client_token: str | None = field(default=None, repr=False)
+    raw_event: RawShadowEvent = field(repr=False, kw_only=True)
 
 
 def parse_accepted_shadow(
@@ -42,7 +56,12 @@ def parse_accepted_shadow(
     client_token = document.get("clientToken")
     if client_token is not None and (not isinstance(client_token, str) or len(client_token) > 128):
         raise AupuProtocolError
-    return AcceptedShadow(topic_kind=topic_kind, state=state, client_token=client_token)
+    return AcceptedShadow(
+        topic_kind=topic_kind,
+        state=state,
+        client_token=client_token,
+        raw_event=RawShadowEvent(direction="incoming", topic=topic, payload=payload),
+    )
 
 
 def parse_light_shadow_update(

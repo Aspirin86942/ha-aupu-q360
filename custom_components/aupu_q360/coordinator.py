@@ -20,6 +20,7 @@ from .models import DeviceConfig
 from .shadow import (
     AcceptedShadow,
     LightShadowUpdate,
+    RawShadowEvent,
     parse_accepted_shadow,
     parse_light_shadow_update,
 )
@@ -29,6 +30,7 @@ LightStateSource = Literal["unknown", "command", "reported", "desired", "get_rep
 StateClock = Callable[[], datetime]
 DiscoveryObserver = Callable[[AcceptedShadow], None]
 DiscoveryCancel = Callable[[], None]
+OutgoingDiscoveryRecorder = Callable[[RawShadowEvent], None]
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -171,12 +173,16 @@ class AupuCoordinator:
             self._discovery_observer = None
             self._discovery_cancel = None
 
-    async def async_request_shadow_get(self, client_token: str) -> None:
+    async def async_request_shadow_get(
+        self,
+        client_token: str,
+        record_outgoing: OutgoingDiscoveryRecorder | None = None,
+    ) -> None:
         """Send one read-only snapshot request through the existing WSS."""
         if not self.discovery_available or self._wss is None:
             raise HomeAssistantError("discovery_wss_unavailable")
         try:
-            await self._wss.async_request_shadow_get(client_token)
+            await self._wss.async_request_shadow_get(client_token, record_outgoing)
         except (AupuError, aiohttp.ClientError, RuntimeError, TimeoutError):
             raise HomeAssistantError("discovery_wss_unavailable") from None
 

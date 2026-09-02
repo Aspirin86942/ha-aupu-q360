@@ -26,7 +26,7 @@ from .mqtt_codec import (
     encode_publish,
     encode_subscribe,
 )
-from .shadow import AcceptedShadow
+from .shadow import AcceptedShadow, RawShadowEvent
 
 _WSS_ENDPOINT = "wss://aii5h05kuofsj.ats.iot.cn-north-1.amazonaws.com.cn/mqtt"
 _RETRY_DELAYS = (2.0, 4.0, 8.0, 16.0, 30.0)
@@ -38,6 +38,7 @@ _LOGGER = logging.getLogger(__name__)
 
 ConnectionCallback = Callable[[bool, bool], None]
 ShadowParser = Callable[[str, bytes], AcceptedShadow | None]
+OutgoingRecorder = Callable[[RawShadowEvent], None]
 
 
 class AupuShadowWebSocket:
@@ -103,7 +104,11 @@ class AupuShadowWebSocket:
             if self._runner_task is task:
                 self._runner_task = None
 
-    async def async_request_shadow_get(self, client_token: str) -> None:
+    async def async_request_shadow_get(
+        self,
+        client_token: str,
+        record_outgoing: OutgoingRecorder | None = None,
+    ) -> None:
         """Send one correlated Shadow get only on the current ready connection."""
         if not isinstance(client_token, str) or _DISCOVERY_TOKEN.fullmatch(client_token) is None:
             raise AupuProtocolError
@@ -111,15 +116,17 @@ class AupuShadowWebSocket:
         if websocket is None:
             raise AupuProtocolError
         payload = json.dumps({"clientToken": client_token}, separators=(",", ":")).encode("utf-8")
+        event = RawShadowEvent(
+            direction="outgoing",
+            topic=f"$aws/things/{self._device.did}/shadow/get",
+            payload=payload,
+        )
         async with self._send_lock:
             if websocket is not self._active_websocket:
                 raise AupuProtocolError
-            await websocket.send_bytes(
-                encode_publish(
-                    f"$aws/things/{self._device.did}/shadow/get",
-                    payload,
-                )
-            )
+            if record_outgoing is not None:
+                record_outgoing(event)
+            await websocket.send_bytes(encode_publish(event.topic, event.payload))
 
     def _runner_done(self, task: asyncio.Task[None]) -> None:
         """Release the completed task reference and consume unexpected task errors."""

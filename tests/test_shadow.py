@@ -38,12 +38,19 @@ def test_accepted_shadow_is_decoded_once_without_repr_exposure() -> None:
     assert isinstance(message, shadow.AcceptedShadow)
     assert message.topic_kind == "get"
     assert message.client_token == client_token
+    assert message.raw_event.direction == "incoming"
+    assert message.raw_event.topic == GET_ACCEPTED
+    assert message.raw_event.payload is payload
     assert shadow.parse_light_shadow_update(DEVICE, message) == LightShadowUpdate(
         True, True, "get_reported"
     )
     rendered = repr(message)
     assert client_token not in rendered
     assert "22.5" not in rendered
+    assert GET_ACCEPTED not in rendered
+    assert repr(message.raw_event) == "RawShadowEvent(<redacted>)"
+    assert GET_ACCEPTED not in repr(message.raw_event)
+    assert payload.decode() not in repr(message.raw_event)
 
 
 @pytest.mark.parametrize(
