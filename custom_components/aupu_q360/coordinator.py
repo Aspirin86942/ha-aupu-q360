@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Literal
 
 import aiohttp
@@ -19,6 +20,12 @@ from .shadow import LightShadowUpdate, parse_shadow_update
 from .wss import AupuShadowWebSocket
 
 LightStateSource = Literal["unknown", "command", "reported", "desired", "get_reported"]
+StateClock = Callable[[], datetime]
+
+
+def _utc_now() -> datetime:
+    """Return the current aware UTC timestamp for confirmed state evidence."""
+    return datetime.now(UTC)
 
 
 class AupuCoordinator:
@@ -36,6 +43,7 @@ class AupuCoordinator:
         device: DeviceConfig | None = None,
         use_wss: bool = False,
         user_uuid: str | None = None,
+        now: StateClock = _utc_now,
     ) -> None:
         self._hass = hass
         self._entry_id = entry_id
@@ -51,6 +59,9 @@ class AupuCoordinator:
         self._wss_healthy = False
         self._last_error_code = "none"
         self._light_state_source: LightStateSource = "unknown"
+        self._now = now
+        self._state_stale = True
+        self._last_confirmed_at: datetime | None = None
         self._wss: AupuShadowWebSocket | None = None
         if use_wss:
             if session is None or device is None:
@@ -100,6 +111,16 @@ class AupuCoordinator:
         """Return the fixed source category for the latest light state."""
         return self._light_state_source
 
+    @property
+    def state_stale(self) -> bool:
+        """Return whether the latest light state lacks a current confirmation."""
+        return self._state_stale
+
+    @property
+    def last_confirmed_at(self) -> datetime | None:
+        """Return the UTC instant of the last physically confirmed light state."""
+        return self._last_confirmed_at
+
     async def async_start(self) -> None:
         """Reconcile JWT Repairs and start the optional WSS state channel."""
         self._stopped = False
@@ -123,6 +144,7 @@ class AupuCoordinator:
         finally:
             self._wss_connected = False
             self._wss_healthy = False
+            self._state_stale = True
             self._listeners.clear()
 
     async def async_set_light(self, is_on: bool) -> None:
@@ -167,6 +189,12 @@ class AupuCoordinator:
         self._is_on = is_on
         self._assumed_state = not confirmed
         self._light_state_source = source
+        self._state_stale = not confirmed
+        if confirmed:
+            confirmed_at = self._now()
+            if confirmed_at.tzinfo is None or confirmed_at.utcoffset() is None:
+                raise ValueError("State clock must return an aware datetime")
+            self._last_confirmed_at = confirmed_at.astimezone(UTC)
         for listener in tuple(self._listeners):
             listener()
 
@@ -185,6 +213,8 @@ class AupuCoordinator:
         """Update WSS availability without clearing or reversing the light state."""
         self._wss_connected = connected
         self._wss_healthy = connected and healthy
+        if not connected:
+            self._state_stale = True
         for listener in tuple(self._listeners):
             listener()
 

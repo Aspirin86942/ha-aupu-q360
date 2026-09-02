@@ -71,9 +71,13 @@ class AupuLight(LightEntity):
         return self._coordinator.assumed_state
 
     @property
-    def extra_state_attributes(self) -> dict[str, bool]:
-        """Expose non-secret WSS connection health without affecting HTTPS control."""
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Project the coordinator's non-secret state-confidence evidence."""
+        confirmed_at = self._coordinator.last_confirmed_at
         return {
+            "state_source": self._coordinator.light_state_source,
+            "state_stale": self._coordinator.state_stale,
+            "last_confirmed_at": confirmed_at.isoformat() if confirmed_at is not None else None,
             "wss_connected": self._coordinator.wss_connected,
             "wss_healthy": self._coordinator.wss_healthy,
         }

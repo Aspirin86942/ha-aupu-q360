@@ -22,7 +22,7 @@ from custom_components.aupu_q360 import async_setup_entry, async_unload_entry
 from custom_components.aupu_q360.api import AupuApiClient
 from custom_components.aupu_q360.auth import BearerCredential
 from custom_components.aupu_q360.const import DOMAIN
-from custom_components.aupu_q360.coordinator import AupuCoordinator
+from custom_components.aupu_q360.coordinator import AupuCoordinator, StateClock
 from custom_components.aupu_q360.errors import AupuAuthError, AupuTemporaryError
 from custom_components.aupu_q360.light import AupuLight
 from custom_components.aupu_q360.light import async_setup_entry as async_setup_light
@@ -51,6 +51,11 @@ def _token(expires_at: datetime) -> str:
 
 def _credential(offset: timedelta) -> BearerCredential:
     return BearerCredential.parse(_token(datetime.now(UTC) + offset))
+
+
+def _test_utc_now() -> datetime:
+    """Return an aware clock value for coordinator tests."""
+    return datetime.now(UTC)
 
 
 class FakeApi:
@@ -107,6 +112,7 @@ def _coordinator(
     *,
     entry_id: str = "synthetic-entry",
     reauth_requests: list[None] | None = None,
+    now: StateClock = _test_utc_now,
 ) -> AupuCoordinator:
     hass = type("FakeRepairHass", (), {"data": {}})()
 
@@ -120,6 +126,7 @@ def _coordinator(
         credential=credential or _credential(timedelta(days=2)),
         api=cast(AupuApiClient, api),
         async_request_reauth=request_reauth,
+        now=now,
     )
 
 
@@ -277,40 +284,98 @@ def test_shadow_source_and_disconnect_preserve_confirmed_state(
 ) -> None:
     """Catch desired/disconnect updates masquerading as physical confirmation."""
     del issues
-    coordinator = _coordinator(FakeApi())
+    confirmed_at = datetime(2026, 9, 2, 1, 2, 3, tzinfo=UTC)
+    coordinator = _coordinator(FakeApi(), now=lambda: confirmed_at)
     entity = AupuLight(
         coordinator=coordinator,
         entry_id="synthetic-entry",
         unique_id="synthetic-light",
     )
 
-    coordinator.async_apply_shadow_update(
-        LightShadowUpdate(is_on=True, confirmed=False, source="desired")
-    )
-    assert coordinator.is_on is True
-    assert coordinator.assumed_state is True
+    assert coordinator.is_on is None
+    assert coordinator.state_stale is True
+    assert coordinator.last_confirmed_at is None
+    assert coordinator.light_state_source == "unknown"
 
     coordinator.async_apply_wss_connection(connected=True, healthy=True)
-    assert coordinator.wss_connected is True
-    assert coordinator.wss_healthy is True
-    assert entity.extra_state_attributes == {
-        "wss_connected": True,
-        "wss_healthy": True,
-    }
-
     coordinator.async_apply_shadow_update(
-        LightShadowUpdate(is_on=False, confirmed=True, source="reported")
+        LightShadowUpdate(is_on=True, confirmed=True, source="reported")
     )
+
+    assert coordinator.state_stale is False
+    assert coordinator.last_confirmed_at == confirmed_at
+    assert coordinator.light_state_source == "reported"
+
+    coordinator.async_apply_light_state(is_on=False, confirmed=False, source="command")
+    assert coordinator.state_stale is True
+    assert coordinator.last_confirmed_at == confirmed_at
+
     coordinator.async_apply_wss_connection(connected=False, healthy=False)
 
     assert coordinator.is_on is False
-    assert coordinator.assumed_state is False
+    assert coordinator.state_stale is True
+    assert coordinator.last_confirmed_at == confirmed_at
     assert coordinator.wss_connected is False
     assert coordinator.wss_healthy is False
     assert entity.extra_state_attributes == {
+        "state_source": "command",
+        "state_stale": True,
+        "last_confirmed_at": "2026-09-02T01:02:03+00:00",
         "wss_connected": False,
         "wss_healthy": False,
     }
+
+    coordinator.async_apply_wss_connection(connected=True, healthy=False)
+    assert coordinator.state_stale is True
+    coordinator.async_apply_shadow_update(
+        LightShadowUpdate(is_on=True, confirmed=True, source="get_reported")
+    )
+    assert coordinator.state_stale is False
+    assert coordinator.light_state_source == "get_reported"
+
+
+@pytest.mark.parametrize("source", ["reported", "get_reported"])
+def test_confirmed_shadow_sources_refresh_confirmation_time(source: str) -> None:
+    """Catch a reported Shadow state being treated as an optimistic command."""
+    confirmed_at = datetime(2026, 9, 2, 1, 2, 3, tzinfo=UTC)
+    coordinator = _coordinator(FakeApi(), now=lambda: confirmed_at)
+
+    coordinator.async_apply_shadow_update(
+        LightShadowUpdate(is_on=True, confirmed=True, source=source)
+    )
+
+    assert coordinator.state_stale is False
+    assert coordinator.last_confirmed_at == confirmed_at
+
+
+@pytest.mark.parametrize("source", ["desired", "command"])
+def test_unconfirmed_sources_keep_last_confirmation_time(source: str) -> None:
+    """Catch desired or command states overwriting the last physical confirmation."""
+    confirmed_at = datetime(2026, 9, 2, 1, 2, 3, tzinfo=UTC)
+    coordinator = _coordinator(FakeApi(), now=lambda: confirmed_at)
+    coordinator.async_apply_shadow_update(
+        LightShadowUpdate(is_on=True, confirmed=True, source="reported")
+    )
+
+    coordinator.async_apply_light_state(is_on=False, confirmed=False, source=source)
+
+    assert coordinator.state_stale is True
+    assert coordinator.last_confirmed_at == confirmed_at
+
+
+def test_stop_marks_state_stale_without_discarding_light_evidence() -> None:
+    """Catch teardown erasing the last known light state or presenting it as fresh."""
+    confirmed_at = datetime(2026, 9, 2, 1, 2, 3, tzinfo=UTC)
+    coordinator = _coordinator(FakeApi(), now=lambda: confirmed_at)
+    coordinator.async_apply_shadow_update(
+        LightShadowUpdate(is_on=True, confirmed=True, source="reported")
+    )
+
+    _run(coordinator.async_stop())
+
+    assert coordinator.is_on is True
+    assert coordinator.last_confirmed_at == confirmed_at
+    assert coordinator.state_stale is True
 
 
 def test_wss_auth_failure_reuses_deduplicated_reauth_entry(
