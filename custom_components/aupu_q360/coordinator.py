@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -33,9 +31,6 @@ from .wss import AupuShadowWebSocket
 
 LightStateSource = Literal["unknown", "command", "reported", "desired", "get_reported"]
 StateClock = Callable[[], datetime]
-ProbeObserver = Callable[[AcceptedShadow], None]
-ProbeCancel = Callable[[], None]
-_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -99,8 +94,6 @@ class AupuCoordinator:
         self._night_light = _PanelFieldState[bool]()
         self._fan_level = _PanelFieldState[int]()
         self._ai_target_temperature = _PanelFieldState[int]()
-        self._probe_observer: ProbeObserver | None = None
-        self._probe_cancel: ProbeCancel | None = None
         if use_wss:
             if session is None or device is None:
                 raise ValueError("WSS runtime dependencies are required")
@@ -195,16 +188,6 @@ class AupuCoordinator:
         )
 
     @property
-    def probe_available(self) -> bool:
-        """Return whether a read-only probe snapshot can be sent now."""
-        return (
-            not self._stopped
-            and not self._reauth_requested
-            and self._wss is not None
-            and self._wss_connected
-        )
-
-    @property
     def last_error_code(self) -> str:
         """Return only the latest fixed, credential-safe runtime error code."""
         return self._last_error_code
@@ -250,31 +233,6 @@ class AupuCoordinator:
             self._state_stale = True
             self._mark_panel_state_stale()
             self._listeners.clear()
-            self._probe_observer = None
-            self._probe_cancel = None
-
-    async def async_request_shadow_get(self, client_token: str) -> None:
-        """Send one read-only snapshot request through the existing WSS."""
-        if not self.probe_available or self._wss is None:
-            raise HomeAssistantError("discovery_wss_unavailable")
-        try:
-            await self._wss.async_request_shadow_get(client_token)
-        except (AupuError, aiohttp.ClientError, RuntimeError, TimeoutError):
-            raise HomeAssistantError("discovery_wss_unavailable") from None
-
-    async def async_prepare_probe_transport(self) -> None:
-        """Renew WSS and require one healthy connection before the probe starts."""
-        wss = self._wss
-        if self._stopped or self._reauth_requested or wss is None or self._wss_missing_user_uuid:
-            raise HomeAssistantError("discovery_wss_unavailable")
-        try:
-            await wss.async_renew_and_wait_healthy(timeout_seconds=45.0)
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 - keep transport details inside the boundary
-            raise HomeAssistantError("discovery_wss_unavailable") from None
-        if not self._wss_connected or not self._wss_healthy:
-            raise HomeAssistantError("discovery_wss_unavailable")
 
     async def async_set_light(self, is_on: bool) -> None:
         """Send exactly one control call after enforcing the local auth gate."""
@@ -368,7 +326,7 @@ class AupuCoordinator:
 
     @callback
     def async_apply_shadow_message(self, message: AcceptedShadow) -> None:
-        """Apply formal light state before isolating optional probe work."""
+        """Apply all formal state from one Shadow message before notifying."""
         if self._device is None:
             return
         light_update = parse_light_shadow_update(self._device, message)
@@ -384,33 +342,6 @@ class AupuCoordinator:
             applied |= self._apply_panel_state_update(panel_update)
         if applied:
             self._notify_listeners()
-        observer = self._probe_observer
-        if observer is None:
-            return
-        try:
-            observer(message)
-        except Exception:  # noqa: BLE001 - probe must not affect formal state
-            _LOGGER.error("AUPU probe observer failed")
-
-    @callback
-    def async_set_probe_observer(
-        self,
-        observer: ProbeObserver,
-        cancel: ProbeCancel,
-    ) -> Callable[[], None]:
-        """Attach the sole active probe observer and return its remover."""
-        if self._probe_observer is not None:
-            raise HomeAssistantError("discovery_busy")
-        self._probe_observer = observer
-        self._probe_cancel = cancel
-
-        @callback
-        def remove() -> None:
-            if self._probe_observer is observer:
-                self._probe_observer = None
-                self._probe_cancel = None
-
-        return remove
 
     @callback
     def async_apply_wss_connection(self, connected: bool, healthy: bool) -> None:
@@ -420,18 +351,12 @@ class AupuCoordinator:
         if not connected:
             self._state_stale = True
             self._mark_panel_state_stale()
-            cancel = self._probe_cancel
-            if cancel is not None:
-                cancel()
         self._notify_listeners()
 
     @callback
     def async_handle_wss_auth_failure(self) -> None:
         """Route transport authentication failure through the one-shot Reauth gate."""
         self._last_error_code = AupuAuthError.error_code
-        cancel = self._probe_cancel
-        if cancel is not None:
-            cancel()
         self._request_reauth_once()
 
     @callback

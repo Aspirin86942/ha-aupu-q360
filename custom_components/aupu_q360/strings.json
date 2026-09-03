@@ -123,45 +123,6 @@
       }
     }
   },
-  "services": {
-    "start_probe": {
-      "name": "Start temporary reported probe",
-      "description": "Builds a temporary reported baseline without controlling the device.",
-      "fields": {
-        "config_entry_id": {
-          "name": "Config entry",
-          "description": "The loaded AUPU Q360 config entry to observe."
-        }
-      }
-    },
-    "sample_probe": {
-      "name": "Sample temporary reported probe",
-      "description": "Returns boolean and small-integer changes from the previous correlated snapshot.",
-      "fields": {
-        "config_entry_id": {
-          "name": "Config entry",
-          "description": "The loaded AUPU Q360 config entry to observe."
-        }
-      }
-    },
-    "stop_probe": {
-      "name": "Stop temporary reported probe",
-      "description": "Clears only probe memory and its observer; it does not restore or control the device.",
-      "fields": {
-        "config_entry_id": {
-          "name": "Config entry",
-          "description": "The loaded AUPU Q360 config entry to observe."
-        }
-      }
-    }
-  },
-  "exceptions": {
-    "probe_busy": {"message": "A probe or snapshot operation is already active."},
-    "probe_inactive": {"message": "No active probe is available for this config entry."},
-    "probe_wss_unavailable": {"message": "The read-only Shadow state channel is unavailable."},
-    "probe_snapshot_timeout": {"message": "The correlated reported snapshot timed out."},
-    "probe_invalid_payload": {"message": "The reported Shadow payload cannot be safely sampled. The probe was stopped."}
-  },
   "issues": {
     "jwt_expiring": {
       "title": "AUPU token expires soon",

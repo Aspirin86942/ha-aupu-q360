@@ -44,77 +44,6 @@ def _scalar_strings(value: object) -> list[str]:
     return [value] if isinstance(value, str) else []
 
 
-def test_temporary_probe_public_contract_is_exact(project_root: Path) -> None:
-    """Catch an obsolete Action, persistence option, or probe instruction resurfacing."""
-    strings = _load_json(project_root / "custom_components/aupu_q360/strings.json")
-    translation = _load_json(project_root / "custom_components/aupu_q360/translations/zh-Hans.json")
-    services = _load_yaml(project_root / "custom_components/aupu_q360/services.yaml")
-    diagnostics = (project_root / "custom_components/aupu_q360/diagnostics.py").read_text(
-        encoding="utf-8"
-    )
-    readme = (project_root / "README.md").read_text(encoding="utf-8")
-    runbook = (project_root / "docs/q360-read-only-discovery-runbook.md").read_text(
-        encoding="utf-8"
-    )
-
-    expected_services = {"start_probe", "sample_probe", "stop_probe"}
-    expected_errors = {
-        "probe_busy",
-        "probe_inactive",
-        "probe_wss_unavailable",
-        "probe_snapshot_timeout",
-        "probe_invalid_payload",
-    }
-    assert set(services) == expected_services
-    assert set(strings["services"]) == expected_services
-    assert set(strings["exceptions"]) == expected_errors
-    assert _key_tree(translation) == _key_tree(strings)
-    for service in services.values():
-        assert isinstance(service, dict)
-        fields = service["fields"]
-        assert fields == {
-            "config_entry_id": {
-                "required": True,
-                "selector": {"config_entry": {"integration": DOMAIN}},
-            }
-        }
-    assert "raw_" + "archive_enabled" not in strings["options"]["step"]["init"]["data"]
-    assert "state_" + "discovery" not in diagnostics
-    assert not re.search(r"\b[0-9]{9,}\b", json.dumps(services))
-
-    old_actions = {
-        "start_" + "discovery",
-        "begin_" + "discovery_step",
-        "advance_" + "discovery_step",
-        "finish_" + "discovery",
-        "cancel_" + "discovery",
-    }
-    for document in (readme, runbook):
-        for required in (
-            "start_probe",
-            "sample_probe",
-            "stop_probe",
-            "临时开发工具",
-            "不保存",
-            "约 23 次",
-        ):
-            assert required in document
-        for old_action in old_actions:
-            assert old_action not in document
-        for forbidden_control in (
-            "light.turn_on",
-            "switch.turn_on",
-            "number.set_value",
-            "select.select_option",
-            "set_light",
-            "CONTROL_PATH",
-            "shadow/update",
-        ):
-            assert forbidden_control not in document
-    assert "连续两次" in runbook
-    assert "App 层" in runbook
-
-
 def test_persistent_discovery_modules_are_absent(project_root: Path) -> None:
     """Catch a persistent discovery module or runtime surface returning."""
     component = project_root / "custom_components/aupu_q360"
@@ -210,8 +139,6 @@ def test_english_and_simplified_chinese_flow_keys_match(project_root: Path) -> N
         "options",
         "issues",
         "entity",
-        "services",
-        "exceptions",
     }
     config = strings["config"]
     options = strings["options"]

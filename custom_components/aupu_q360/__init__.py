@@ -4,19 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EVENT_HOMEASSISTANT_STOP, Platform
-from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.const import Platform
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import AupuApiClient
 from .coordinator import AupuCoordinator
 from .models import AupuConfigEntryData, AupuRuntimeData
-from .probe import PanelStateProbe
-from .services import async_register_probe_entry, async_unregister_probe_entry
-from .shadow import AcceptedShadow
 from .signer import AppAuthorizationSigner
 
 _PLATFORMS = (Platform.LIGHT, Platform.BINARY_SENSOR, Platform.SENSOR)
@@ -99,53 +95,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry[AupuRuntimeD
         user_uuid=config.user_uuid,
     )
     entry.runtime_data.coordinator = coordinator
-    observer_remover: Callable[[], None] | None = None
-
-    def activate_observer(
-        observer: Callable[[AcceptedShadow], None],
-        cancel: Callable[[], None],
-    ) -> None:
-        nonlocal observer_remover
-        if observer_remover is not None:
-            raise RuntimeError("probe observer already active")
-        observer_remover = coordinator.async_set_probe_observer(observer, cancel)
-
-    def deactivate_observer() -> None:
-        nonlocal observer_remover
-        remove = observer_remover
-        observer_remover = None
-        if remove is not None:
-            remove()
-
-    probe = PanelStateProbe(
-        device_id=device.did,
-        prepare_transport=coordinator.async_prepare_probe_transport,
-        request_shadow_get=coordinator.async_request_shadow_get,
-        activate_observer=activate_observer,
-        deactivate_observer=deactivate_observer,
-        probe_available=lambda: coordinator.probe_available,
-    )
-    entry.runtime_data.probe = probe
-    entry.runtime_data.stoppers.extend((probe, coordinator))
-    services_registered = False
+    entry.runtime_data.stoppers.append(coordinator)
     try:
         await coordinator.async_start()
-        async_register_probe_entry(hass, entry.entry_id)
-        services_registered = True
         await hass.config_entries.async_forward_entry_setups(entry, _PLATFORMS)
     except BaseException:
-        if services_registered:
-            async_unregister_probe_entry(hass, entry.entry_id)
         await _async_teardown_runtime(entry)
         raise
-
-    @callback
-    def cancel_probe_on_stop(_: Event) -> None:
-        probe.cancel_from_transport()
-
-    entry.async_on_unload(
-        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, cancel_probe_on_stop)
-    )
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
     return True
 
@@ -154,6 +110,5 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry[AupuRuntime
     """Unload entities, then stop and release runtime-owned background work."""
     if not await hass.config_entries.async_unload_platforms(entry, _PLATFORMS):
         return False
-    async_unregister_probe_entry(hass, entry.entry_id)
     await _async_teardown_runtime(entry)
     return True

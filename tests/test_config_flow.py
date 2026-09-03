@@ -37,7 +37,6 @@ from custom_components.aupu_q360.models import (
     AupuConfigEntryData,
     AupuRuntimeData,
 )
-from custom_components.aupu_q360.probe import PanelStateProbe
 from custom_components.aupu_q360.signer import AppAuthorizationSigner
 
 SYNTHETIC_SIGNER = {
@@ -770,7 +769,7 @@ def test_loaded_options_update_reloads_runtime_once(
     assert entry.runtime_data is not old_runtime
     assert entry.runtime_data.credential.authorization_header == f"Bearer {replacement}"
     assert len(entry.update_listeners) == 1
-    assert len(entry.unload_callbacks) == 2
+    assert len(entry.unload_callbacks) == 1
 
 
 def test_options_enabling_wss_waits_for_confirmation(
@@ -1197,17 +1196,13 @@ def test_setup_builds_runtime_and_forwards_light_without_network(
     assert isinstance(entry.runtime_data.signer, AppAuthorizationSigner)
     assert entry.runtime_data.device.did == "123456789"
     assert entry.runtime_data.credential.authorization_header.startswith("Bearer ")
-    assert isinstance(entry.runtime_data.probe, PanelStateProbe)
-    assert entry.runtime_data.stoppers == [
-        entry.runtime_data.probe,
-        entry.runtime_data.coordinator,
-    ]
+    assert entry.runtime_data.stoppers == [entry.runtime_data.coordinator]
     assert hass.config_entries.forwarded == (
         Platform.LIGHT,
         Platform.BINARY_SENSOR,
         Platform.SENSOR,
     )
-    assert len(hass.services.handlers) == 3
+    assert hass.services.handlers == {}
 
 
 def test_setup_ignores_legacy_archive_key_without_rewriting_entry(
@@ -1229,7 +1224,6 @@ def test_setup_ignores_legacy_archive_key_without_rewriting_entry(
 
     assert result is True
     assert entry.runtime_data is not None
-    assert isinstance(entry.runtime_data.probe, PanelStateProbe)
     assert entry.data == original_data
     assert hass.config_entries.update_calls == 0
 

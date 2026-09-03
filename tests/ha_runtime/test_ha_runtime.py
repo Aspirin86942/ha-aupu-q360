@@ -9,7 +9,6 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 import aiohttp
@@ -18,12 +17,9 @@ from homeassistant.config_entries import SOURCE_REAUTH, SOURCE_USER, ConfigEntry
 from homeassistant.const import STATE_UNAVAILABLE
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
-from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.restore_state import ATTR_RESTORED
-from homeassistant.helpers.service import _SERVICES_SCHEMA
-from homeassistant.util.yaml import load_yaml_dict
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.aupu_q360.api import AupuApiClient, WssCredentials
@@ -32,12 +28,7 @@ from custom_components.aupu_q360.diagnostics import (
     async_get_config_entry_diagnostics,
 )
 from custom_components.aupu_q360.models import ApiResponse
-from custom_components.aupu_q360.mqtt_codec import decode_packets, encode_publish
-from custom_components.aupu_q360.services import (
-    SAMPLE_PROBE,
-    START_PROBE,
-    STOP_PROBE,
-)
+from custom_components.aupu_q360.mqtt_codec import encode_publish
 from custom_components.aupu_q360.shadow import LightShadowUpdate
 from custom_components.aupu_q360.wss import AupuShadowWebSocket
 
@@ -199,66 +190,6 @@ async def _unload(hass: HomeAssistant, entry: ConfigEntry[Any]) -> None:
     await hass.async_block_till_done()
 
 
-def _shadow_state(
-    is_on: bool = False,
-    *,
-    night_light: bool = False,
-    ventilation: bool = False,
-    fan_level: int = 3,
-    ai_warmth: bool = False,
-    temperature: int = 35,
-) -> dict[str, object]:
-    return {
-        "reported": {
-            "123456789": {
-                "2": {"properties": {"1": is_on}},
-                "5": {"properties": {"1": night_light}},
-                "6": {"properties": {"1": ventilation, "2": fan_level}},
-                "7": {"properties": {"1": ai_warmth, "2": temperature}},
-                "8": {"properties": {"1": "synthetic-private-raw-marker"}},
-            }
-        }
-    }
-
-
-async def _call_probe_snapshot_action(
-    hass: HomeAssistant,
-    websocket: _FakeWebSocket,
-    service: str,
-    data: dict[str, object],
-    state: dict[str, object],
-) -> dict[str, Any]:
-    sent_before = len(websocket.sent)
-    task = asyncio.create_task(
-        hass.services.async_call(
-            DOMAIN,
-            service,
-            data,
-            blocking=True,
-            return_response=True,
-        )
-    )
-    await _wait_until(lambda: len(websocket.sent) > sent_before)
-    packet = decode_packets(websocket.sent[-1])[0]
-    assert packet.topic == "$aws/things/123456789/shadow/get"
-    request = json.loads(packet.payload)
-    client_token = request["clientToken"]
-    assert isinstance(client_token, str)
-    response_payload = json.dumps(
-        {"clientToken": client_token, "state": state},
-        separators=(",", ":"),
-    ).encode()
-    websocket.queue_binary(
-        encode_publish(
-            "$aws/things/123456789/shadow/get/accepted",
-            response_payload,
-        )
-    )
-    response = await task
-    assert isinstance(response, dict)
-    return response
-
-
 async def _queue_shadow_update(
     hass: HomeAssistant,
     websocket: _FakeWebSocket,
@@ -273,16 +204,28 @@ async def _queue_shadow_update(
     await hass.async_block_till_done()
 
 
-def test_services_yaml_matches_home_assistant_runtime_schema() -> None:
-    """Catch invalid service selectors hiding every Q360 action description."""
-    services_path = Path(__file__).parents[2] / "custom_components/aupu_q360/services.yaml"
-    descriptions = _SERVICES_SCHEMA(load_yaml_dict(str(services_path)))
+async def test_real_entry_registers_no_temporary_probe_actions(
+    hass: HomeAssistant,
+) -> None:
+    """Catch any temporary probe Action remaining in the loaded HA runtime."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="AUPU Q360",
+        unique_id="synthetic-no-probe-entry",
+        data=_entry_data(
+            token=_jwt(
+                expires_in=7 * 24 * 60 * 60,
+                subject="synthetic-no-probe",
+            )
+        ),
+    )
+    entry.add_to_hass(hass)
 
-    assert set(descriptions) == {
-        "start_probe",
-        "sample_probe",
-        "stop_probe",
-    }
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    for service in ("start_probe", "sample_probe", "stop_probe"):
+        assert not hass.services.has_service(DOMAIN, service)
+    await _unload(hass, entry)
 
 
 async def test_real_flow_managers_complete_user_options_and_manual_reauth(
@@ -548,251 +491,6 @@ async def test_real_entry_manager_starts_and_stops_fake_wss_without_task_leak(
     assert after <= before
     assert websocket.sent[-1] == b"\xe0\x00"
     assert websocket.close_calls == 1
-
-
-async def test_real_services_sample_temporary_probe_without_persistence_or_control(
-    hass: HomeAssistant,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Run the three probe Actions through real HA services and an in-memory WSS."""
-    initial_websocket = _FakeWebSocket()
-    websocket = _FakeWebSocket()
-    session = _FakeSession([initial_websocket, websocket])
-    sleep = _ControlledSleep()
-    original_init = AupuShadowWebSocket.__init__
-    control_calls: list[bool] = []
-    credential_calls = 0
-
-    def init_with_fake_sleep(
-        client: AupuShadowWebSocket,
-        *args: object,
-        **kwargs: object,
-    ) -> None:
-        kwargs["sleep"] = sleep
-        original_init(client, *args, **kwargs)
-
-    async def fake_get_wss_credentials(self: AupuApiClient) -> WssCredentials:
-        del self
-        nonlocal credential_calls
-        credential_calls += 1
-        return WssCredentials(
-            authorizer_name="synthetic-authorizer",
-            signature=f"synthetic-signature-{credential_calls}",
-            token_key_name="synthetic-token-key",
-        )
-
-    async def fake_set_light(self: AupuApiClient, is_on: bool) -> ApiResponse:
-        del self
-        control_calls.append(is_on)
-        raise AssertionError("probe attempted an HTTPS control call")
-
-    monkeypatch.setattr(AupuShadowWebSocket, "__init__", init_with_fake_sleep)
-    monkeypatch.setattr(AupuApiClient, "get_wss_credentials", fake_get_wss_credentials)
-    monkeypatch.setattr(AupuApiClient, "set_light", fake_set_light)
-    monkeypatch.setattr(
-        "custom_components.aupu_q360.async_get_clientsession",
-        lambda _: session,
-    )
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        title="AUPU Q360",
-        unique_id="synthetic-probe-entry",
-        data=_entry_data(
-            token=_jwt(expires_in=7 * 24 * 60 * 60, subject="synthetic-probe"),
-            use_wss=True,
-            user_uuid="synthetic-user-uuid",
-            legacy_archive_enabled=True,
-        ),
-    )
-    entry.add_to_hass(hass)
-
-    assert await hass.config_entries.async_setup(entry.entry_id)
-    await initial_websocket.receive_started.wait()
-    await _wait_until(lambda: sleep.delays == [30])
-    for service in (START_PROBE, SAMPLE_PROBE, STOP_PROBE):
-        assert hass.services.has_service(DOMAIN, service)
-
-    base = {"config_entry_id": entry.entry_id}
-    baseline = _shadow_state()
-    start_task = asyncio.create_task(
-        hass.services.async_call(
-            DOMAIN,
-            START_PROBE,
-            base,
-            blocking=True,
-            return_response=True,
-        )
-    )
-    await _wait_until(lambda: len(session.calls) == 2)
-    await _wait_until(lambda: len(websocket.sent) == 4)
-    assert initial_websocket.sent[-1] == b"\xe0\x00"
-    assert initial_websocket.close_calls == 1
-    assert credential_calls == 2
-    assert start_task.done() is False
-
-    await sleep.release_next()
-    await _wait_until(lambda: websocket.sent[-1] == b"\xc0\x00")
-    websocket.queue_binary(b"\xd0\x00")
-    await _wait_until(lambda: len(websocket.sent) == 6)
-    request_packet = decode_packets(websocket.sent[-1])[0]
-    request = json.loads(request_packet.payload)
-    token = request["clientToken"]
-    websocket.queue_binary(
-        encode_publish(
-            "$aws/things/123456789/shadow/get/accepted",
-            json.dumps(
-                {"clientToken": token, "state": baseline},
-                separators=(",", ":"),
-            ).encode(),
-        )
-    )
-    assert await start_task == {
-        "state": "active",
-        "message_code": "probe_started",
-        "sample_count": 0,
-        "changes": [],
-    }
-
-    changed = _shadow_state(ventilation=True, fan_level=4)
-    sent_before = len(websocket.sent)
-    sample_task = asyncio.create_task(
-        hass.services.async_call(
-            DOMAIN,
-            SAMPLE_PROBE,
-            base,
-            blocking=True,
-            return_response=True,
-        )
-    )
-    await _wait_until(lambda: len(websocket.sent) > sent_before)
-    await _queue_shadow_update(hass, websocket, _shadow_state(is_on=True))
-    assert sample_task.done() is False
-    entities = er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
-    light = next(entity for entity in entities if entity.domain == "light")
-    light_state = hass.states.get(light.entity_id)
-    assert light_state is not None
-    assert light_state.state == "on"
-
-    sample_packet = decode_packets(websocket.sent[-1])[0]
-    sample_request = json.loads(sample_packet.payload)
-    websocket.queue_binary(
-        encode_publish(
-            "$aws/things/123456789/shadow/get/accepted",
-            json.dumps(
-                {"clientToken": sample_request["clientToken"], "state": changed},
-                separators=(",", ":"),
-            ).encode(),
-        )
-    )
-    assert await sample_task == {
-        "state": "active",
-        "message_code": "probe_sampled",
-        "sample_count": 1,
-        "changes": [
-            {"path": "service/6/property/1", "before": False, "after": True},
-            {"path": "service/6/property/2", "before": 3, "after": 4},
-        ],
-    }
-
-    stop_response = await hass.services.async_call(
-        DOMAIN,
-        STOP_PROBE,
-        base,
-        blocking=True,
-        return_response=True,
-    )
-    assert stop_response == {
-        "state": "inactive",
-        "message_code": "probe_stopped",
-        "sample_count": 1,
-        "changes": [],
-    }
-    diagnostics = await async_get_config_entry_diagnostics(hass, entry)
-    assert "state_" + "discovery" not in diagnostics
-    storage = Path(hass.config.path(".storage"))
-    if storage.exists():
-        assert not any(
-            "probe" in path.name or "discovery" in path.name for path in storage.iterdir()
-        )
-    assert control_calls == []
-    assert entry.data["raw_" + "archive_enabled"] is True
-
-    await _unload(hass, entry)
-    for service in (START_PROBE, SAMPLE_PROBE, STOP_PROBE):
-        assert not hass.services.has_service(DOMAIN, service)
-
-
-async def test_real_services_remain_registered_until_final_entry_unloads(
-    hass: HomeAssistant,
-) -> None:
-    """Catch one Config Entry unregistering probe Actions still owned by another."""
-    first = MockConfigEntry(
-        domain=DOMAIN,
-        title="AUPU Q360 first",
-        unique_id="synthetic-multi-entry-first",
-        data=_entry_data(token=_jwt(expires_in=7 * 24 * 60 * 60, subject="synthetic-multi-first")),
-    )
-    second = MockConfigEntry(
-        domain=DOMAIN,
-        title="AUPU Q360 second",
-        unique_id="synthetic-multi-entry-second",
-        data=_entry_data(token=_jwt(expires_in=7 * 24 * 60 * 60, subject="synthetic-multi-second")),
-    )
-    first.add_to_hass(hass)
-    second.add_to_hass(hass)
-    assert await hass.config_entries.async_setup(first.entry_id)
-    await hass.async_block_till_done()
-    assert hasattr(second, "runtime_data")
-
-    service_names = (
-        START_PROBE,
-        SAMPLE_PROBE,
-        STOP_PROBE,
-    )
-    assert all(hass.services.has_service(DOMAIN, service) for service in service_names)
-
-    await _unload(hass, first)
-    assert all(hass.services.has_service(DOMAIN, service) for service in service_names)
-
-    await _unload(hass, second)
-    assert all(not hass.services.has_service(DOMAIN, service) for service in service_names)
-
-
-async def test_real_https_only_probe_fails_without_transport_or_control(
-    hass: HomeAssistant,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Keep the probe fail-closed when this Config Entry has no subscribed WSS."""
-    control_calls: list[bool] = []
-
-    async def fake_set_light(self: AupuApiClient, is_on: bool) -> ApiResponse:
-        del self
-        control_calls.append(is_on)
-        return ApiResponse(status=200, result={}, timestamp=0)
-
-    monkeypatch.setattr(AupuApiClient, "set_light", fake_set_light)
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        title="AUPU Q360",
-        unique_id="synthetic-https-probe-entry",
-        data=_entry_data(token=_jwt(expires_in=7 * 24 * 60 * 60, subject="synthetic-https-probe")),
-    )
-    entry.add_to_hass(hass)
-    assert await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
-
-    with pytest.raises(ServiceValidationError) as raised:
-        await hass.services.async_call(
-            DOMAIN,
-            START_PROBE,
-            {"config_entry_id": entry.entry_id},
-            blocking=True,
-            return_response=True,
-        )
-
-    assert raised.value.translation_key == "probe_wss_unavailable"
-    assert control_calls == []
-    await _unload(hass, entry)
 
 
 async def test_real_entry_manager_wss_to_https_only_removes_state_channel(

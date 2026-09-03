@@ -12,7 +12,6 @@ from .signer import AppAuthorizationSigner, SignerSecrets
 if TYPE_CHECKING:
     from .api import AupuApiClient
     from .coordinator import AupuCoordinator
-    from .probe import PanelStateProbe
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,7 +156,6 @@ class AupuRuntimeData:
     use_wss: bool = False
     user_uuid: str | None = field(default=None, repr=False)
     coordinator: AupuCoordinator = field(init=False)
-    probe: PanelStateProbe = field(init=False, repr=False)
     stoppers: list[AsyncStopper] = field(default_factory=list)
 
 

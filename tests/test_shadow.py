@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
@@ -153,8 +152,8 @@ def test_panel_numeric_boundaries_are_inclusive(
 
 
 def test_accepted_shadow_is_decoded_once_without_repr_exposure() -> None:
-    """Catch probe data being retained outside the private parsed message fields."""
-    client_token = "disc-0123456789abcdef0123456789abcdef"
+    """Catch untrusted top-level data being retained in the parsed message."""
+    client_token = "synthetic-untrusted-correlation-value"
     payload = (
         b'{"clientToken":"'
         + client_token.encode()
@@ -166,7 +165,7 @@ def test_accepted_shadow_is_decoded_once_without_repr_exposure() -> None:
 
     assert isinstance(message, shadow.AcceptedShadow)
     assert message.topic_kind == "get"
-    assert message.client_token == client_token
+    assert not hasattr(message, "client_token")
     assert not hasattr(message, "raw_event")
     assert shadow.parse_light_shadow_update(DEVICE, message) == LightShadowUpdate(
         True, True, "get_reported"
@@ -179,25 +178,8 @@ def test_accepted_shadow_is_decoded_once_without_repr_exposure() -> None:
     direct = shadow.AcceptedShadow(
         topic_kind="get",
         state={"reported": {}},
-        client_token=client_token,
     )
-    assert client_token not in repr(direct)
     assert "reported" not in repr(direct)
-
-
-@pytest.mark.parametrize(
-    "client_token",
-    [1, True, ["invalid"], "x" * 129],
-)
-def test_invalid_client_token_raises_fixed_protocol_error(client_token: object) -> None:
-    """Catch untrusted correlation values reaching exceptions or later reports."""
-    payload = b'{"clientToken":' + json.dumps(client_token).encode() + b',"state":{"reported":{}}}'
-
-    with pytest.raises(AupuProtocolError) as raised:
-        shadow.parse_accepted_shadow(DEVICE, GET_ACCEPTED, payload)
-
-    assert str(raised.value) == "Service response is invalid"
-    assert repr(client_token) not in str(raised.value)
 
 
 def test_get_accepted_reported_value_is_confirmed_get_reported() -> None:

@@ -26,7 +26,6 @@ class AcceptedShadow:
 
     topic_kind: Literal["get", "update"]
     state: dict[str, Any] = field(repr=False)
-    client_token: str | None = field(default=None, repr=False)
 
 
 type PanelMode = Literal[
@@ -92,13 +91,9 @@ def parse_accepted_shadow(
     state = document.get("state")
     if not isinstance(state, dict):
         raise AupuProtocolError
-    client_token = document.get("clientToken")
-    if client_token is not None and (not isinstance(client_token, str) or len(client_token) > 128):
-        raise AupuProtocolError
     return AcceptedShadow(
         topic_kind=topic_kind,
         state=state,
-        client_token=client_token,
     )
 
 

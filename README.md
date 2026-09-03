@@ -6,8 +6,9 @@ Q360T5-Pro 浴霸照明。云 API 与私有协议可能随厂商更新而失效�
 
 ## 支持范围
 
-- 仅支持一个照明实体的 on/off 控制。
-- 不支持取暖、换气、烘干、摆风以及浴霸的其他功能。
+- 支持一个主照明实体的 on/off 控制。
+- 启用 WSS 后提供当前运行模式、小夜灯、风量档位和 AI 目标温度四个只读状态实体。
+- 不支持控制取暖、换气、烘干、摆风、小夜灯、风量档位或温度，也不映射剩余时间。
 - 控制依赖奥普 HTTPS 云 API；AWS IoT WSS 仅用于接收状态反馈，不是本地控制通道。
 
 ## HACS 安装
@@ -65,27 +66,22 @@ Repair，控制会在凭据失效时停止。`jwt_expiring` 只是提前告警�
   `state_stale=true`，直到后续设备确认。
 - `last_confirmed_at` 是 Home Assistant 接收设备确认的 UTC 时间；重启后由首次 Shadow `get`
   重建，不代表设备侧事件发生时间。
-- 启用 WSS 时会创建状态通道 connectivity binary sensor；HTTPS-only 模式不创建该实体。
+- 启用 WSS 时会创建状态通道 connectivity binary sensor，以及当前运行模式、小夜灯、风量档位
+  和 AI 目标温度四个只读实体；HTTPS-only 模式不创建这五个实体。
+- 四个面板状态只读取目标设备 Shadow `reported`。运行模式是一个互斥 enum；未识别的整数模式
+  显示“未知”，不会猜测或公开原始值。
+- WSS 断线或当前连接尚未确认某字段时，对应面板实体为 unavailable。partial update 中缺失的
+  字段保留上次规范化值，存在但无效的字段只让自身不可用。
 
-## 临时只读状态探针
+## 只读面板状态
 
-启用 WSS 后，开发者可以使用 `aupu_q360.start_probe`、`aupu_q360.sample_probe` 和
-`aupu_q360.stop_probe` 观察相邻两份 Shadow `reported` 快照中的安全标量变化。这是一次性的
-临时开发工具，不是正式发布功能；它只复用当前 WSS 并发送相关联的 Shadow `get`，不会控制
-设备，也不会依据未知路径创建实体。
+四个正式面板实体来自已经通过相邻变化与恢复验证的 `reported` 字段，只复用现有唯一 WSS。
+集成不会为它们调用 HTTPS 控制、发布 Shadow `update`、写入 `desired`，也不会创建第二条 WSS。
+模式、夜灯、档位和温度都是只读状态，不能由本集成控制。
 
-`start_probe` 建立内存基线，`sample_probe` 返回规范化路径上的布尔值和 `-1000..1000` 整数
-变化，`stop_probe` 清空内存与观察器。探针不保存快照、差异、token、topic 或 payload，不写入
-Config Entry、HA Store、Diagnostics、文件或日志。现有 WSS 解析器已经能看到解密后的 Shadow
-JSON，因此外部 HAR/PCAP 不是默认前提。
-
-自适应手机实验以一次空闲样本、七个模式的开启/恢复配对、一个档位变化/恢复配对和一个温度
-变化/恢复配对为基准，约 23 次 `sample_probe`。每次只在奥普官方 App 或官方微信小程序改变
-一个变量，且必须同时看到变化和恢复才可形成候选。连续两次单变量操作仍为空白，或变化/恢复
-仍无法排除多个路径时，应把该能力标记为未确认，停止猜测并另行设计 App 层观察方案。
-
-完整的安全边界、自适应流程和停止条件见
-[Q360 临时状态探针运行手册](docs/q360-read-only-discovery-runbook.md)。
+正式运行不需要 HAR/PCAP，不提供临时状态 Action，也不保存原始 topic、payload、未知路径或原始
+数据。持续递减但语义尚未完全确认的候选字段没有被发布为剩余时间；未来扩展需要新的证据和
+独立设计。
 
 ## 安全与备份
 
@@ -105,8 +101,8 @@ HA 备份包含 Config Entry 中的 JWT、私有签名和设备配置。备份�
 ## 故障排查
 
 先下载 Home Assistant 的集成诊断。诊断只返回白名单健康字段，包括集成版本、粗粒度 JWT
-到期区间、WSS 开关/连接/健康状态、推定状态、状态来源和固定错误码；不包含临时探针状态、
-路径、数值或样本。常见固定错误码包括
+到期区间、WSS 开关/连接/健康状态、推定状态、状态来源、固定错误码，以及四个正式字段的
+规范化值和总体可用性；不包含 service/property 路径、未知原始模式整数或未确认候选。常见固定错误码包括
 `authentication_failed`、`rate_limited`、`temporary_failure`、`protocol_error` 和
 `runtime_stopped`。
 

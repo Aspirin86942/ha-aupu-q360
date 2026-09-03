@@ -123,45 +123,6 @@
       }
     }
   },
-  "services": {
-    "start_probe": {
-      "name": "启动临时 reported 探针",
-      "description": "建立临时 reported 基线，不控制设备。",
-      "fields": {
-        "config_entry_id": {
-          "name": "配置条目",
-          "description": "要观察的已加载奥普 Q360 配置条目。"
-        }
-      }
-    },
-    "sample_probe": {
-      "name": "采样临时 reported 探针",
-      "description": "返回与上一份关联快照之间的布尔值和小整数变化。",
-      "fields": {
-        "config_entry_id": {
-          "name": "配置条目",
-          "description": "要观察的已加载奥普 Q360 配置条目。"
-        }
-      }
-    },
-    "stop_probe": {
-      "name": "停止临时 reported 探针",
-      "description": "只清理探针内存和观察器，不恢复或控制设备。",
-      "fields": {
-        "config_entry_id": {
-          "name": "配置条目",
-          "description": "要观察的已加载奥普 Q360 配置条目。"
-        }
-      }
-    }
-  },
-  "exceptions": {
-    "probe_busy": {"message": "已有探针或快照操作正在进行。"},
-    "probe_inactive": {"message": "该配置条目当前没有活动探针。"},
-    "probe_wss_unavailable": {"message": "只读 Shadow 状态通道不可用。"},
-    "probe_snapshot_timeout": {"message": "关联 reported 快照等待超时。"},
-    "probe_invalid_payload": {"message": "reported Shadow 数据无法安全采样，探针已停止。"}
-  },
   "issues": {
     "jwt_expiring": {
       "title": "奥普 Token 即将过期",
