@@ -208,6 +208,46 @@ def test_discovery_actions_have_fixed_ui_schemas_and_translations(project_root: 
     assert set(strings["services"]) == expected_services
     assert set(strings["exceptions"]) == expected_exceptions
     assert _key_tree(translation) == _key_tree(strings)
+
+    english_services = " ".join(_scalar_strings(strings["services"]))
+    english_exceptions = " ".join(_scalar_strings(strings["exceptions"]))
+    chinese_services = " ".join(_scalar_strings(translation["services"]))
+    chinese_exceptions = " ".join(_scalar_strings(translation["exceptions"]))
+
+    assert (
+        "operator control surface (physical panel, official AUPU app, or official WeChat "
+        "mini program)" in english_services
+    )
+    assert "操作者控制面（实体面板、奥普官方 App 或官方微信小程序）" in chinese_services
+    assert "remote sessions must cancel and arrange an on-site inspection" in english_exceptions
+    assert "远程会话必须取消并安排现场检查" in chinese_exceptions
+
+    for obsolete_panel_only_copy in (
+        "on the physical panel",
+        "inspect the physical panel",
+    ):
+        assert obsolete_panel_only_copy not in english_services
+        assert obsolete_panel_only_copy not in english_exceptions
+    for obsolete_panel_only_copy in (
+        "请在实体面板",
+        "检查实体面板",
+    ):
+        assert obsolete_panel_only_copy not in chinese_services
+        assert obsolete_panel_only_copy not in chinese_exceptions
+
+    prompt_keys = {
+        "discovery_prompt_mode_on",
+        "discovery_prompt_mode_restore",
+        "discovery_prompt_carrier_on",
+        "discovery_prompt_parameter_change",
+        "discovery_prompt_parameter_restore",
+        "discovery_prompt_carrier_off",
+        "discovery_prompt_idle_observation",
+    }
+    for key in prompt_keys:
+        assert "operator control surface" in strings["exceptions"][key]["message"]
+        assert "操作者控制面" in translation["exceptions"][key]["message"]
+
     for name, service in services.items():
         assert isinstance(service, dict)
         fields = service["fields"]

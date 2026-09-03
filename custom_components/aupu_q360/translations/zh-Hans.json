@@ -103,7 +103,7 @@
   "services": {
     "start_discovery": {
       "name": "开始只读发现",
-      "description": "手工确认面板所有模式均已关闭后，开始仅使用 reported 的 Shadow 发现。",
+      "description": "在操作者控制面确认七个模式均已关闭后，开始仅使用 reported 的 Shadow 发现。",
       "fields": {
         "config_entry_id": {
           "name": "配置条目",
@@ -111,7 +111,7 @@
         },
         "all_modes_off_confirmed": {
           "name": "所有模式均已关闭",
-          "description": "获取基线快照前，确认面板上七个模式均明显处于关闭状态。"
+          "description": "获取基线快照前，在操作者控制面（实体面板、奥普官方 App 或官方微信小程序）确认七个模式均已关闭。"
         }
       }
     },
@@ -133,7 +133,7 @@
         },
         "source_level": {
           "name": "原全局档位",
-          "description": "仅全局档位实验必填；关闭载体前必须在面板上手工恢复此值。"
+          "description": "仅全局档位实验必填；关闭载体前必须在操作者控制面恢复此值。"
         },
         "target_level": {
           "name": "目标全局档位",
@@ -141,7 +141,7 @@
         },
         "source_temperature": {
           "name": "原 AI 温度",
-          "description": "仅 AI 目标温度实验必填；关闭载体前必须在面板上手工恢复此值。"
+          "description": "仅 AI 目标温度实验必填；关闭载体前必须在操作者控制面恢复此值。"
         },
         "target_temperature": {
           "name": "相邻 AI 温度",
@@ -171,7 +171,7 @@
     },
     "cancel_discovery": {
       "name": "取消只读发现",
-      "description": "停止软件采集且不发送恢复命令；收到提示时请检查实体面板。",
+      "description": "停止软件采集且不发送恢复命令；远程会话收到提示时必须安排现场检查。",
       "fields": {
         "config_entry_id": {
           "name": "配置条目",
@@ -181,29 +181,29 @@
     }
   },
   "exceptions": {
-    "discovery_wss_unavailable": {"message": "只读状态通道不可用。请停止采集并检查实体面板。"},
+    "discovery_wss_unavailable": {"message": "只读状态通道不可用。请停止采集，通过操作者控制面恢复，并安排现场检查。"},
     "discovery_busy": {"message": "已有只读发现会话正在运行。"},
-    "discovery_snapshot_timeout": {"message": "关联 Shadow 快照等待超时。请停止采集并检查实体面板。"},
+    "discovery_snapshot_timeout": {"message": "关联 Shadow 快照等待超时。请停止采集，通过操作者控制面恢复，并安排现场检查。"},
     "discovery_invalid_transition": {"message": "当前发现状态不允许此操作。"},
-    "discovery_step_expired": {"message": "当前发现阶段已超时。请停止采集并检查实体面板。"},
-    "discovery_session_expired": {"message": "只读发现会话已超时。请停止采集并检查实体面板。"},
-    "discovery_resource_limit": {"message": "当前阶段超过脱敏变化上限。请停止采集并检查实体面板。"},
+    "discovery_step_expired": {"message": "当前发现阶段已超时。请停止采集，通过操作者控制面恢复，并安排现场检查。"},
+    "discovery_session_expired": {"message": "只读发现会话已超时。请停止采集，通过操作者控制面恢复，并安排现场检查。"},
+    "discovery_resource_limit": {"message": "当前阶段超过脱敏变化上限。请停止采集，通过操作者控制面恢复，并安排现场检查。"},
     "discovery_report_save_failed": {"message": "脱敏报告保存失败。"},
     "discovery_raw_archive_unavailable": {"message": "固定私有原始档案挂载不可用；尚未发送发现请求。"},
-    "discovery_raw_archive_failed": {"message": "私有原始档案写入失败。请停止采集并检查实体面板。"},
-    "discovery_raw_archive_limit": {"message": "私有原始档案达到固定上限。请停止采集并检查实体面板。"},
+    "discovery_raw_archive_failed": {"message": "私有原始档案写入失败。请停止采集，通过操作者控制面恢复，并安排现场检查。"},
+    "discovery_raw_archive_limit": {"message": "私有原始档案达到固定上限。请停止采集，通过操作者控制面恢复，并安排现场检查。"},
     "discovery_invalid_parameter": {"message": "实验参数不符合固定目录。"},
-    "discovery_restore_required": {"message": "reported 尚未确认恢复。请在实体面板恢复后重新推进同一阶段。"},
-    "discovery_manual_restore_required": {"message": "停止采集前尚未确认恢复。请在实体面板检查所有模式、原档位和原温度。"},
+    "discovery_restore_required": {"message": "reported 尚未确认恢复。现场操作者可恢复后重试同一阶段；远程会话必须取消并安排现场检查。"},
+    "discovery_manual_restore_required": {"message": "停止采集前尚未确认恢复。请通过操作者控制面恢复所有模式、原档位和原温度，然后安排现场检查。"},
     "discovery_invalid_payload": {"message": "reported Shadow 数据无法安全用于发现。"},
     "discovery_ready_for_step": {"message": "基线已就绪，可以开始受控步骤。"},
-    "discovery_prompt_mode_on": {"message": "请只在实体面板开启所选模式，然后推进。"},
-    "discovery_prompt_mode_restore": {"message": "请在实体面板关闭所选模式，确认已关闭后推进。"},
-    "discovery_prompt_carrier_on": {"message": "请在实体面板开启目录指定的载体模式，然后推进。"},
-    "discovery_prompt_parameter_change": {"message": "请把所测档位或温度从原值改为目标值，然后推进。"},
-    "discovery_prompt_parameter_restore": {"message": "请在实体面板恢复原档位或原温度，然后推进。"},
-    "discovery_prompt_carrier_off": {"message": "请在实体面板关闭载体模式，确认恢复后推进。"},
-    "discovery_prompt_idle_observation": {"message": "空闲观察期间不要操作面板，等待后推进。"},
+    "discovery_prompt_mode_on": {"message": "请只在操作者控制面开启所选模式，刷新后推进。"},
+    "discovery_prompt_mode_restore": {"message": "请在操作者控制面关闭所选模式，刷新确认后推进。"},
+    "discovery_prompt_carrier_on": {"message": "请在操作者控制面开启目录指定的载体模式，刷新后推进。"},
+    "discovery_prompt_parameter_change": {"message": "请在操作者控制面把所测档位或温度从原值改为目标值，刷新后推进。"},
+    "discovery_prompt_parameter_restore": {"message": "请在操作者控制面恢复原档位或原温度，刷新后推进。"},
+    "discovery_prompt_carrier_off": {"message": "请在操作者控制面关闭载体模式，刷新确认后推进。"},
+    "discovery_prompt_idle_observation": {"message": "空闲观察期间不要操作操作者控制面，等待后推进。"},
     "discovery_cycle_recorded": {"message": "脱敏发现循环已记录。"},
     "discovery_report_saved": {"message": "脱敏发现报告已保存。"},
     "discovery_cancelled": {"message": "活动发现会话已取消，未发送任何设备命令。"}

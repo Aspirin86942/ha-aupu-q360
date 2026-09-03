@@ -103,7 +103,7 @@
   "services": {
     "start_discovery": {
       "name": "Start read-only discovery",
-      "description": "Starts reported-only Shadow discovery after every panel mode is manually confirmed off.",
+      "description": "Starts reported-only Shadow discovery after all seven modes are confirmed off on an operator control surface.",
       "fields": {
         "config_entry_id": {
           "name": "Config entry",
@@ -111,7 +111,7 @@
         },
         "all_modes_off_confirmed": {
           "name": "All modes are off",
-          "description": "Confirm that all seven panel modes are visibly off before the baseline snapshot."
+          "description": "Confirm on an operator control surface (physical panel, official AUPU app, or official WeChat mini program) that all seven modes are off before the baseline snapshot."
         }
       }
     },
@@ -133,7 +133,7 @@
         },
         "source_level": {
           "name": "Original global level",
-          "description": "Required only for the global fan-level experiment; manually restore this value before carrier shutdown."
+          "description": "Required only for the global fan-level experiment; restore this value on the operator control surface before carrier shutdown."
         },
         "target_level": {
           "name": "Target global level",
@@ -141,7 +141,7 @@
         },
         "source_temperature": {
           "name": "Original AI temperature",
-          "description": "Required only for the AI target-temperature experiment; manually restore this value before carrier shutdown."
+          "description": "Required only for the AI target-temperature experiment; restore this value on the operator control surface before carrier shutdown."
         },
         "target_temperature": {
           "name": "Adjacent AI temperature",
@@ -171,7 +171,7 @@
     },
     "cancel_discovery": {
       "name": "Cancel read-only discovery",
-      "description": "Stops software collection without sending restoration commands; inspect the physical panel when prompted.",
+      "description": "Stops software collection without sending restoration commands; remote sessions require an on-site inspection when prompted.",
       "fields": {
         "config_entry_id": {
           "name": "Config entry",
@@ -181,29 +181,29 @@
     }
   },
   "exceptions": {
-    "discovery_wss_unavailable": {"message": "The read-only state channel is unavailable. Stop collection and inspect the physical panel."},
+    "discovery_wss_unavailable": {"message": "The read-only state channel is unavailable. Stop collection, restore through the operator control surface, and arrange an on-site inspection."},
     "discovery_busy": {"message": "A read-only discovery session is already active."},
-    "discovery_snapshot_timeout": {"message": "The correlated Shadow snapshot timed out. Stop collection and inspect the physical panel."},
+    "discovery_snapshot_timeout": {"message": "The correlated Shadow snapshot timed out. Stop collection, restore through the operator control surface, and arrange an on-site inspection."},
     "discovery_invalid_transition": {"message": "This action is not valid in the current discovery state."},
-    "discovery_step_expired": {"message": "The active discovery stage expired. Stop collection and inspect the physical panel."},
-    "discovery_session_expired": {"message": "The read-only discovery session expired. Stop collection and inspect the physical panel."},
-    "discovery_resource_limit": {"message": "The active stage exceeded its sanitized change limit. Stop collection and inspect the physical panel."},
+    "discovery_step_expired": {"message": "The active discovery stage expired. Stop collection, restore through the operator control surface, and arrange an on-site inspection."},
+    "discovery_session_expired": {"message": "The read-only discovery session expired. Stop collection, restore through the operator control surface, and arrange an on-site inspection."},
+    "discovery_resource_limit": {"message": "The active stage exceeded its sanitized change limit. Stop collection, restore through the operator control surface, and arrange an on-site inspection."},
     "discovery_report_save_failed": {"message": "The sanitized report could not be saved."},
     "discovery_raw_archive_unavailable": {"message": "The fixed private raw archive mount is unavailable; no discovery request was sent."},
-    "discovery_raw_archive_failed": {"message": "The private raw archive failed. Stop collection and inspect the physical panel."},
-    "discovery_raw_archive_limit": {"message": "The private raw archive reached its fixed limit. Stop collection and inspect the physical panel."},
+    "discovery_raw_archive_failed": {"message": "The private raw archive failed. Stop collection, restore through the operator control surface, and arrange an on-site inspection."},
+    "discovery_raw_archive_limit": {"message": "The private raw archive reached its fixed limit. Stop collection, restore through the operator control surface, and arrange an on-site inspection."},
     "discovery_invalid_parameter": {"message": "The experiment parameters do not match the fixed catalog."},
-    "discovery_restore_required": {"message": "Reported restoration is not confirmed. Restore the physical panel and advance the same stage again."},
-    "discovery_manual_restore_required": {"message": "Collection stopped before restoration was confirmed. Inspect all modes, the original level, and the original temperature on the physical panel."},
+    "discovery_restore_required": {"message": "Reported restoration is not confirmed. Local operators may restore and advance again; remote sessions must cancel and arrange an on-site inspection."},
+    "discovery_manual_restore_required": {"message": "Collection stopped before restoration was confirmed. Restore all modes, the original level, and the original temperature through the operator control surface, then arrange an on-site inspection."},
     "discovery_invalid_payload": {"message": "The reported Shadow payload cannot be safely used for discovery."},
     "discovery_ready_for_step": {"message": "The baseline is ready for a controlled step."},
-    "discovery_prompt_mode_on": {"message": "Turn on only the selected mode on the physical panel, then advance."},
-    "discovery_prompt_mode_restore": {"message": "Turn the selected mode off on the physical panel, verify it is off, then advance."},
-    "discovery_prompt_carrier_on": {"message": "Turn on the catalog carrier mode on the physical panel, then advance."},
-    "discovery_prompt_parameter_change": {"message": "Change the tested level or temperature from the original value to the target value, then advance."},
-    "discovery_prompt_parameter_restore": {"message": "Restore the original level or temperature on the physical panel, then advance."},
-    "discovery_prompt_carrier_off": {"message": "Turn the carrier mode off on the physical panel, verify restoration, then advance."},
-    "discovery_prompt_idle_observation": {"message": "Do not operate the panel during the idle observation, then advance."},
+    "discovery_prompt_mode_on": {"message": "Turn on only the selected mode on the operator control surface, refresh it, then advance."},
+    "discovery_prompt_mode_restore": {"message": "Turn the selected mode off on the operator control surface, refresh it to confirm, then advance."},
+    "discovery_prompt_carrier_on": {"message": "Turn on the catalog carrier mode on the operator control surface, refresh it, then advance."},
+    "discovery_prompt_parameter_change": {"message": "Change the tested level or temperature from the original value to the target value on the operator control surface, refresh it, then advance."},
+    "discovery_prompt_parameter_restore": {"message": "Restore the original level or temperature on the operator control surface, refresh it, then advance."},
+    "discovery_prompt_carrier_off": {"message": "Turn the carrier mode off on the operator control surface, refresh it to confirm, then advance."},
+    "discovery_prompt_idle_observation": {"message": "Do not use the operator control surface during the idle observation, then advance."},
     "discovery_cycle_recorded": {"message": "The sanitized discovery cycle was recorded."},
     "discovery_report_saved": {"message": "The sanitized discovery report was saved."},
     "discovery_cancelled": {"message": "The active discovery session was cancelled without sending a device command."}
