@@ -864,7 +864,7 @@ def test_setup_starts_one_coordinator_stopper_and_registers_dual_platforms(
     )
     assert entry.runtime_data is not None
     coordinator = entry.runtime_data.coordinator
-    assert entry.runtime_data.stoppers == [entry.runtime_data.discovery_session, coordinator]
+    assert entry.runtime_data.stoppers == [entry.runtime_data.probe, coordinator]
     assert config_entries.forwarded == (Platform.LIGHT, Platform.BINARY_SENSOR)
     assert len(config_entries.entities) == 1
     entity = config_entries.entities[0]
@@ -982,7 +982,7 @@ def test_setup_and_unload_own_one_enabled_wss_lifecycle(
     assert entry.runtime_data is not None
     assert len(starts) == 1
     assert entry.runtime_data.stoppers == [
-        entry.runtime_data.discovery_session,
+        entry.runtime_data.probe,
         entry.runtime_data.coordinator,
     ]
 

@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import subprocess
 from collections.abc import Coroutine, Generator
-from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
@@ -18,7 +16,6 @@ import pytest
 from custom_components.aupu_q360.auth import BearerCredential
 from custom_components.aupu_q360.coordinator import AupuCoordinator
 from custom_components.aupu_q360.diagnostics import async_get_config_entry_diagnostics
-from custom_components.aupu_q360.raw_discovery_archive import RawArchiveMetadata
 from custom_components.aupu_q360.shadow import LightShadowUpdate
 from scripts import check_no_secrets
 
@@ -33,8 +30,25 @@ _DIAGNOSTIC_KEYS = {
     "last_error_code",
     "light_state_source",
     "assumed_state",
-    "state_discovery",
 }
+
+
+def test_diagnostics_do_not_expose_discovery_or_probe_state() -> None:
+    """Catch ephemeral probe state or persistent discovery data entering diagnostics."""
+    runtime = SimpleNamespace(
+        credential=_credential(_NOW + timedelta(days=8)),
+        use_wss=True,
+        coordinator=SimpleNamespace(),
+        probe=SimpleNamespace(active=True, sample_count=7),
+        discovery_store=SimpleNamespace(),
+    )
+    entry = SimpleNamespace(runtime_data=runtime, entry_id="synthetic-entry-id")
+
+    result = _run(async_get_config_entry_diagnostics(None, cast(Any, entry)))
+
+    assert "state_discovery" not in result
+    assert "probe" not in result
+    assert "sample_count" not in json.dumps(result)
 
 
 def _credential(expires_at: datetime | None) -> BearerCredential:
@@ -109,7 +123,6 @@ def test_diagnostics_build_only_the_allowed_scalar_whitelist(
         "last_error_code": "protocol_error",
         "light_state_source": "reported",
         "assumed_state": False,
-        "state_discovery": {"report_available": False},
     }
     serialized = json.dumps(result, sort_keys=True)
     assert set(result) == _DIAGNOSTIC_KEYS
@@ -144,7 +157,6 @@ def test_unloaded_and_incomplete_runtime_keep_the_same_whitelist(
         "last_error_code": "none",
         "light_state_source": "unknown",
         "assumed_state": False,
-        "state_discovery": {"report_available": False},
     }
     assert results == [expected, expected]
     assert all(secret not in json.dumps(result) for result in results)
@@ -195,7 +207,6 @@ def test_diagnostics_fold_secret_bearing_attribute_and_time_errors_to_defaults(
         "last_error_code": "none",
         "light_state_source": "unknown",
         "assumed_state": False,
-        "state_discovery": {"report_available": False},
     }
     assert results == [expected, expected]
     assert all(secret not in json.dumps(result) for result in results)
@@ -220,118 +231,8 @@ def test_incomplete_runtime_does_not_compute_credential_expiry(
     assert set(result) == _DIAGNOSTIC_KEYS
 
 
-def test_diagnostics_include_only_the_validated_latest_discovery_report(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Catch diagnostics reading Config Entry data or omitting the private report."""
-    from custom_components.aupu_q360.discovery_analysis import build_discovery_report
-
-    report = build_discovery_report(
-        integration_version="0.2.0",
-        started_at=datetime(2026, 9, 2, 13, 47, tzinfo=UTC),
-        wss_baseline_succeeded=True,
-        archive=RawArchiveMetadata(
-            enabled=True,
-            status="complete",
-            session_id="rd-" + "a" * 32,
-            event_count=12,
-            file_bytes=3456,
-            sha256="b" * 64,
-        ),
-        cycles=(),
-    )
-
-    class FakeReportStore:
-        async def async_load(self) -> dict[str, Any]:
-            return report
-
-    sentinel = "private-config-entry-value"
-    runtime = SimpleNamespace(
-        credential=_credential(_NOW + timedelta(days=8)),
-        use_wss=True,
-        coordinator=SimpleNamespace(),
-        discovery_store=FakeReportStore(),
-        device=SimpleNamespace(did="123456789012345", tag="synthetic-device-tag"),
-    )
-    entry = SimpleNamespace(
-        runtime_data=runtime,
-        data={"secret": sentinel},
-        entry_id="synthetic-entry-id",
-    )
-    monkeypatch.setattr("custom_components.aupu_q360.diagnostics._utcnow", lambda: _NOW)
-
-    result = _run(async_get_config_entry_diagnostics(None, cast(Any, entry)))
-
-    assert result["state_discovery"] == {
-        "report_available": True,
-        "report": report,
-    }
-    assert result["state_discovery"]["report"]["raw_archive"] == {
-        "enabled": True,
-        "status": "complete",
-        "session_id": "rd-" + "a" * 32,
-        "event_count": 12,
-        "file_bytes": 3456,
-        "sha256": "b" * 64,
-    }
-    assert sentinel not in json.dumps(result)
-    assert "/var/lib/" not in json.dumps(result)
-    assert "/home/george/" not in json.dumps(result)
-
-
-def test_diagnostics_revalidate_fake_store_and_hide_raw_markers(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Catch an invalid Store bypass injecting topics, payloads, paths, or identifiers."""
-    from custom_components.aupu_q360.discovery_analysis import build_discovery_report
-
-    sentinel = "synthetic-private-raw-marker"
-    report = build_discovery_report(
-        integration_version="0.2.0",
-        started_at=datetime(2026, 9, 2, 13, 47, tzinfo=UTC),
-        wss_baseline_succeeded=True,
-        cycles=(),
-    )
-    invalid = deepcopy(report)
-    invalid["raw_archive"] = {
-        "enabled": True,
-        "status": "complete",
-        "session_id": "rd-" + "a" * 32,
-        "event_count": 1,
-        "file_bytes": 1,
-        "sha256": "b" * 64,
-        "path": f"/var/lib/{sentinel}",
-        "topic": "$aws/things/123456789012345/shadow/get/accepted",
-        "payload": sentinel,
-    }
-
-    class InvalidFakeStore:
-        async def async_load(self) -> dict[str, Any]:
-            return invalid
-
-    runtime = SimpleNamespace(
-        credential=_credential(_NOW + timedelta(days=8)),
-        use_wss=True,
-        coordinator=SimpleNamespace(),
-        discovery_store=InvalidFakeStore(),
-        device=SimpleNamespace(did="123456789012345", tag="synthetic-device-tag"),
-    )
-    entry = SimpleNamespace(runtime_data=runtime, entry_id="synthetic-entry-id")
-
-    with caplog.at_level(logging.ERROR, logger="custom_components.aupu_q360.diagnostics"):
-        result = _run(async_get_config_entry_diagnostics(None, cast(Any, entry)))
-
-    assert result["state_discovery"] == {"report_available": False}
-    serialized = json.dumps(result)
-    assert sentinel not in serialized
-    assert "$aws/things/" not in serialized
-    assert "AUPU discovery diagnostics report rejected" in caplog.text
-    assert sentinel not in caplog.text
-    assert "$aws/things/" not in caplog.text
-
-
-def test_diagnostics_downgrade_report_load_failure_without_exception_text() -> None:
-    """Catch a corrupt Store failure escaping from the diagnostics endpoint."""
+def test_diagnostics_ignore_unreachable_legacy_store() -> None:
+    """Catch diagnostics attempting to load a legacy persistent discovery report."""
     sentinel = "private-store-exception"
 
     class FailingReportStore:
@@ -348,7 +249,7 @@ def test_diagnostics_downgrade_report_load_failure_without_exception_text() -> N
 
     result = _run(async_get_config_entry_diagnostics(None, cast(Any, entry)))
 
-    assert result["state_discovery"] == {"report_available": False}
+    assert set(result) == _DIAGNOSTIC_KEYS
     assert sentinel not in json.dumps(result)
 
 

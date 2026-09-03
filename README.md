@@ -67,42 +67,25 @@ Repair，控制会在凭据失效时停止。`jwt_expiring` 只是提前告警�
   重建，不代表设备侧事件发生时间。
 - 启用 WSS 时会创建状态通道 connectivity binary sensor；HTTPS-only 模式不创建该实体。
 
-## 只读状态发现
+## 临时只读状态探针
 
-启用且连接 WSS 后，可通过五个 `aupu_q360` Action 执行一次性的 v2 只读字段发现：
-`start_discovery`、`begin_discovery_step`、`advance_discovery_step`、`finish_discovery` 和
-`cancel_discovery`。start 会先续建 WSS，并在确认新连接 healthy 后才建立发现基线；续建最多
-等待 45 秒，之后发现仍只发送相关联的 Shadow `get`。Home Assistant 不会开启、关闭或设置面板
-模式、档位与温度。只有目标设备 Shadow `reported` 是确认状态，`desired`、操作阶段和用户陈述
-都不会被当作成功证据。
+启用 WSS 后，开发者可以使用 `aupu_q360.start_probe`、`aupu_q360.sample_probe` 和
+`aupu_q360.stop_probe` 观察相邻两份 Shadow `reported` 快照中的安全标量变化。这是一次性的
+临时开发工具，不是正式发布功能；它只复用当前 WSS 并发送相关联的 Shadow `get`，不会控制
+设备，也不会依据未知路径创建实体。
 
-固定实验目录包含十个标签：
+`start_probe` 建立内存基线，`sample_probe` 返回规范化路径上的布尔值和 `-1000..1000` 整数
+变化，`stop_probe` 清空内存与观察器。探针不保存快照、差异、token、topic 或 payload，不写入
+Config Entry、HA Store、Diagnostics、文件或日志。现有 WSS 解析器已经能看到解密后的 Shadow
+JSON，因此外部 HAR/PCAP 不是默认前提。
 
-- 七个独立模式：`ai_thermostatic_warmth`、`deodorization_sterilization`、`ventilation`、
-  `air_blowing`、`normal_drying`、`thermostatic_drying`、`night_light`；
-- 共享全局档位：`global_fan_level`，合法值为 `1..5`，固定以 `ventilation` 为载体；
-- AI 目标温度：`ai_target_temperature`，合法值为 `30..42`，固定以
-  `ai_thermostatic_warmth` 为载体；
-- 静置环境：`idle_environment`。
+自适应手机实验以一次空闲样本、七个模式的开启/恢复配对、一个档位变化/恢复配对和一个温度
+变化/恢复配对为基准，约 23 次 `sample_probe`。每次只在奥普官方 App 或官方微信小程序改变
+一个变量，且必须同时看到变化和恢复才可形成候选。连续两次单变量操作仍为空白，或变化/恢复
+仍无法排除多个路径时，应把该能力标记为未确认，停止猜测并另行设计 App 层观察方案。
 
-每个 begin 先取得步骤基线，之后由用户按返回的固定提示在操作者控制面手工操作；控制面可以是
-实体面板、奥普官方 App 或官方微信小程序。手机远程实验每次操作后先刷新控制面，再等待
-15–30 秒并用 advance 取得下一阶段快照。模式、档位目标和温度实验各做两轮，并在每轮内人工
-恢复原状态。官方控制面显示只用于核对人工操作，只有目标设备 Shadow `reported` 才是字段证据。
-每个等待操作者的阶段最多 900 秒，完整发现会话最多 3,300 秒。
-旧 v2 报告中的 120/3,600 和 300/3,300 超时 profile 只用于读取兼容，不是当前运行时限。
-
-远程实验必须预先保证浴室无人、无宠物、设备无遮挡，暂停可能控制 Q360 的自动化，并安排家中
-人员保持可联系。取消只清理本次软件会话，不会发恢复命令，也不会覆盖上一次成功报告；异常或
-恢复不确定时必须停止会话，并由家中人员现场确认设备已安全停止。
-
-Options 中的本机私有原始发现档案默认关闭，只能使用管理员预先配置的固定挂载；启用但挂载
-不可用时，会在发送发现请求前失败。无论是否保留原始档案，HA Store 和诊断都只包含通过
-schema 2 校验与敏感扫描的脱敏报告。报告不会自动修改配置、创建实体或启用新控制；候选字段
-进入正式映射前仍需另行设计、测试和授权。原始 HAR、SAZ、PCAP 不是正常发现流程的运行依赖。
-
-完整的授权阶段、实验矩阵、异常停止条件和报告审查要求见
-[Q360 只读状态发现运行手册](docs/q360-read-only-discovery-runbook.md)。
+完整的安全边界、自适应流程和停止条件见
+[Q360 临时状态探针运行手册](docs/q360-read-only-discovery-runbook.md)。
 
 ## 安全与备份
 
@@ -121,9 +104,9 @@ HA 备份包含 Config Entry 中的 JWT、私有签名和设备配置。备份�
 
 ## 故障排查
 
-先下载 Home Assistant 的集成诊断。诊断返回白名单健康字段，包括集成版本、粗粒度 JWT
-到期区间、WSS 开关/连接/健康状态、推定状态、状态来源和固定错误码；存在已成功保存的只读
-发现结果时，还会包含通过固定 schema 与最终敏感扫描的脱敏报告。常见固定错误码包括
+先下载 Home Assistant 的集成诊断。诊断只返回白名单健康字段，包括集成版本、粗粒度 JWT
+到期区间、WSS 开关/连接/健康状态、推定状态、状态来源和固定错误码；不包含临时探针状态、
+路径、数值或样本。常见固定错误码包括
 `authentication_failed`、`rate_limited`、`temporary_failure`、`protocol_error` 和
 `runtime_stopped`。
 

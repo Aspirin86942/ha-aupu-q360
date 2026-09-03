@@ -12,8 +12,7 @@ from .signer import AppAuthorizationSigner, SignerSecrets
 if TYPE_CHECKING:
     from .api import AupuApiClient
     from .coordinator import AupuCoordinator
-    from .discovery import PanelStateDiscoverySession
-    from .discovery_store import DiscoveryReportStore
+    from .probe import PanelStateProbe
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +64,6 @@ class AupuConfigEntryData:
     did: str
     tag: str
     use_wss: bool
-    raw_archive_enabled: bool = False
     user_uuid: str | None = None
     phone: str | None = None
 
@@ -101,9 +99,6 @@ class AupuConfigEntryData:
         use_wss = value.get("use_wss", False)
         if not isinstance(use_wss, bool):
             raise TypeError("WSS choice must be boolean")
-        raw_archive_enabled = value.get("raw_archive_enabled", False)
-        if type(raw_archive_enabled) is not bool:
-            raise TypeError("Raw archive choice must be boolean")
 
         user_uuid = _optional_non_empty_string(value.get("user_uuid"), "User UUID")
         if use_wss and require_user_uuid and user_uuid is None:
@@ -116,7 +111,6 @@ class AupuConfigEntryData:
             did=device.did,
             tag=device.tag,
             use_wss=use_wss,
-            raw_archive_enabled=raw_archive_enabled,
             user_uuid=user_uuid,
             phone=phone,
         )
@@ -144,7 +138,6 @@ class AupuConfigEntryData:
             "did": self.did,
             "tag": self.tag,
             "use_wss": self.use_wss,
-            "raw_archive_enabled": self.raw_archive_enabled,
         }
         if self.user_uuid is not None:
             result["user_uuid"] = self.user_uuid
@@ -162,11 +155,9 @@ class AupuRuntimeData:
     device: DeviceConfig
     api: AupuApiClient
     use_wss: bool = False
-    raw_archive_enabled: bool = False
     user_uuid: str | None = field(default=None, repr=False)
     coordinator: AupuCoordinator = field(init=False)
-    discovery_store: DiscoveryReportStore = field(init=False, repr=False)
-    discovery_session: PanelStateDiscoverySession = field(init=False, repr=False)
+    probe: PanelStateProbe = field(init=False, repr=False)
     stoppers: list[AsyncStopper] = field(default_factory=list)
 
 

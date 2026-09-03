@@ -2,17 +2,14 @@
 
 from __future__ import annotations
 
-import logging
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal, cast
+from typing import Literal
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .auth import BearerCredential
 from .const import INTEGRATION_VERSION
-from .discovery_models import JsonObject
-from .discovery_report_schema import validate_discovery_report
 from .models import AupuRuntimeData
 
 _ONE_DAY = timedelta(days=1)
@@ -29,15 +26,13 @@ _ERROR_CODES = frozenset(
     }
 )
 _STATE_SOURCES = frozenset({"unknown", "command", "reported", "desired", "get_reported"})
-_LOGGER = logging.getLogger(__name__)
-
 ExpiryBucket = Literal["expired", "<24h", "<7d", ">=7d", "unknown"]
 
 
 async def async_get_config_entry_diagnostics(
     hass: HomeAssistant,
     entry: ConfigEntry[AupuRuntimeData],
-) -> JsonObject:
+) -> dict[str, object]:
     """Return only non-secret scalar health signals from a loaded entry."""
     del hass
     runtime = _safe_getattr(entry, "runtime_data", None)
@@ -45,7 +40,7 @@ async def async_get_config_entry_diagnostics(
     coordinator = _safe_getattr(runtime, "coordinator", None)
     runtime_complete = isinstance(credential, BearerCredential) and coordinator is not None
 
-    result: JsonObject = {}
+    result: dict[str, object] = {}
     result["integration_version"] = INTEGRATION_VERSION
     result["authentication_expiry_bucket"] = (
         _safe_expiry_bucket(credential) if runtime_complete else "unknown"
@@ -84,41 +79,7 @@ async def async_get_config_entry_diagnostics(
         if runtime_complete
         else False
     )
-    device = _safe_getattr(runtime, "device", None)
-    forbidden_values = tuple(
-        value
-        for value in (
-            _safe_getattr(device, "did", None),
-            _safe_getattr(device, "tag", None),
-            _safe_getattr(entry, "entry_id", None),
-        )
-        if isinstance(value, str) and value
-    )
-    result["state_discovery"] = await _safe_discovery_report(
-        runtime,
-        forbidden_values=forbidden_values,
-    )
     return result
-
-
-async def _safe_discovery_report(
-    runtime: object,
-    *,
-    forbidden_values: tuple[str, ...],
-) -> JsonObject:
-    store = _safe_getattr(runtime, "discovery_store", None)
-    loader = _safe_getattr(store, "async_load", None)
-    if not callable(loader):
-        return {"report_available": False}
-    try:
-        report = await cast(Any, loader)()
-        if not isinstance(report, dict):
-            return {"report_available": False}
-        validate_discovery_report(report, forbidden_values=forbidden_values)
-    except Exception:  # noqa: BLE001 - diagnostics must not expose Store/report details
-        _LOGGER.error("AUPU discovery diagnostics report rejected")
-        return {"report_available": False}
-    return {"report_available": True, "report": cast(JsonObject, report)}
 
 
 def _expiry_bucket(credential: object, now: datetime) -> ExpiryBucket:

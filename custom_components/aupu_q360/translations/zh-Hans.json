@@ -73,8 +73,7 @@
         "data": {
           "token": "新的 Bearer JWT",
           "phone": "本地手机号（可选）",
-          "use_wss": "启用 WSS 确认状态",
-          "raw_archive_enabled": "启用本机私有原始发现档案（默认关闭；只使用管理员配置的固定容器挂载）"
+          "use_wss": "启用 WSS 确认状态"
         }
       },
       "confirm_wss": {
@@ -101,57 +100,9 @@
     }
   },
   "services": {
-    "start_discovery": {
-      "name": "开始只读发现",
-      "description": "在操作者控制面确认七个模式均已关闭后，开始仅使用 reported 的 Shadow 发现。",
-      "fields": {
-        "config_entry_id": {
-          "name": "配置条目",
-          "description": "要观察的已加载奥普 Q360 配置条目。"
-        },
-        "all_modes_off_confirmed": {
-          "name": "所有模式均已关闭",
-          "description": "获取基线快照前，在操作者控制面（实体面板、奥普官方 App 或官方微信小程序）确认七个模式均已关闭。"
-        }
-      }
-    },
-    "begin_discovery_step": {
-      "name": "开始发现步骤",
-      "description": "为一个固定实验获取操作前快照；载体和阶段顺序均由目录确定。",
-      "fields": {
-        "config_entry_id": {
-          "name": "配置条目",
-          "description": "要观察的已加载奥普 Q360 配置条目。"
-        },
-        "experiment": {
-          "name": "实验",
-          "description": "固定的模式、全局档位、AI 温度或空闲实验。"
-        },
-        "round": {
-          "name": "轮次",
-          "description": "本次实验的第一轮或第二轮。"
-        },
-        "source_level": {
-          "name": "原全局档位",
-          "description": "仅全局档位实验必填；关闭载体前必须在操作者控制面恢复此值。"
-        },
-        "target_level": {
-          "name": "目标全局档位",
-          "description": "仅全局档位实验必填，且必须与原档位不同。"
-        },
-        "source_temperature": {
-          "name": "原 AI 温度",
-          "description": "仅 AI 目标温度实验必填；关闭载体前必须在操作者控制面恢复此值。"
-        },
-        "target_temperature": {
-          "name": "相邻 AI 温度",
-          "description": "仅 AI 目标温度实验必填，且必须与原温度相邻。"
-        }
-      }
-    },
-    "advance_discovery_step": {
-      "name": "推进发现步骤",
-      "description": "为当前目录阶段获取一次仅 reported 的 Shadow 快照；不接受阶段或设备命令。",
+    "start_probe": {
+      "name": "启动临时 reported 探针",
+      "description": "建立临时 reported 基线，不控制设备。",
       "fields": {
         "config_entry_id": {
           "name": "配置条目",
@@ -159,9 +110,9 @@
         }
       }
     },
-    "finish_discovery": {
-      "name": "完成只读发现",
-      "description": "校验并原子保存最新脱敏报告。",
+    "sample_probe": {
+      "name": "采样临时 reported 探针",
+      "description": "返回与上一份关联快照之间的布尔值和小整数变化。",
       "fields": {
         "config_entry_id": {
           "name": "配置条目",
@@ -169,9 +120,9 @@
         }
       }
     },
-    "cancel_discovery": {
-      "name": "取消只读发现",
-      "description": "停止软件采集且不发送恢复命令；远程会话收到提示时必须安排现场检查。",
+    "stop_probe": {
+      "name": "停止临时 reported 探针",
+      "description": "只清理探针内存和观察器，不恢复或控制设备。",
       "fields": {
         "config_entry_id": {
           "name": "配置条目",
@@ -181,32 +132,11 @@
     }
   },
   "exceptions": {
-    "discovery_wss_unavailable": {"message": "只读状态通道不可用。请停止采集，通过操作者控制面恢复，并安排现场检查。"},
-    "discovery_busy": {"message": "已有只读发现会话正在运行。"},
-    "discovery_snapshot_timeout": {"message": "关联 Shadow 快照等待超时。请停止采集，通过操作者控制面恢复，并安排现场检查。"},
-    "discovery_invalid_transition": {"message": "当前发现状态不允许此操作。"},
-    "discovery_step_expired": {"message": "当前发现阶段已超时。请停止采集，通过操作者控制面恢复，并安排现场检查。"},
-    "discovery_session_expired": {"message": "只读发现会话已超时。请停止采集，通过操作者控制面恢复，并安排现场检查。"},
-    "discovery_resource_limit": {"message": "当前阶段超过脱敏变化上限。请停止采集，通过操作者控制面恢复，并安排现场检查。"},
-    "discovery_report_save_failed": {"message": "脱敏报告保存失败。"},
-    "discovery_raw_archive_unavailable": {"message": "固定私有原始档案挂载不可用；尚未发送发现请求。"},
-    "discovery_raw_archive_failed": {"message": "私有原始档案写入失败。请停止采集，通过操作者控制面恢复，并安排现场检查。"},
-    "discovery_raw_archive_limit": {"message": "私有原始档案达到固定上限。请停止采集，通过操作者控制面恢复，并安排现场检查。"},
-    "discovery_invalid_parameter": {"message": "实验参数不符合固定目录。"},
-    "discovery_restore_required": {"message": "reported 尚未确认恢复。现场操作者可恢复后重试同一阶段；远程会话必须取消并安排现场检查。"},
-    "discovery_manual_restore_required": {"message": "停止采集前尚未确认恢复。请通过操作者控制面恢复所有模式、原档位和原温度，然后安排现场检查。"},
-    "discovery_invalid_payload": {"message": "reported Shadow 数据无法安全用于发现。"},
-    "discovery_ready_for_step": {"message": "基线已就绪，可以开始受控步骤。"},
-    "discovery_prompt_mode_on": {"message": "请只在操作者控制面开启所选模式，刷新后推进。"},
-    "discovery_prompt_mode_restore": {"message": "请在操作者控制面关闭所选模式，刷新确认后推进。"},
-    "discovery_prompt_carrier_on": {"message": "请在操作者控制面开启目录指定的载体模式，刷新后推进。"},
-    "discovery_prompt_parameter_change": {"message": "请在操作者控制面把所测档位或温度从原值改为目标值，刷新后推进。"},
-    "discovery_prompt_parameter_restore": {"message": "请在操作者控制面恢复原档位或原温度，刷新后推进。"},
-    "discovery_prompt_carrier_off": {"message": "请在操作者控制面关闭载体模式，刷新确认后推进。"},
-    "discovery_prompt_idle_observation": {"message": "空闲观察期间不要操作操作者控制面，等待后推进。"},
-    "discovery_cycle_recorded": {"message": "脱敏发现循环已记录。"},
-    "discovery_report_saved": {"message": "脱敏发现报告已保存。"},
-    "discovery_cancelled": {"message": "活动发现会话已取消，未发送任何设备命令。"}
+    "probe_busy": {"message": "已有探针或快照操作正在进行。"},
+    "probe_inactive": {"message": "该配置条目当前没有活动探针。"},
+    "probe_wss_unavailable": {"message": "只读 Shadow 状态通道不可用。"},
+    "probe_snapshot_timeout": {"message": "关联 reported 快照等待超时。"},
+    "probe_invalid_payload": {"message": "reported Shadow 数据无法安全采样，探针已停止。"}
   },
   "issues": {
     "jwt_expiring": {

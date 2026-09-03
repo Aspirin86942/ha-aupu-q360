@@ -1,4 +1,4 @@
-"""Tests for Config Entry-directed Q360 v2 discovery actions."""
+"""Tests for Config Entry-directed temporary Q360 probe actions."""
 
 from __future__ import annotations
 
@@ -12,13 +12,7 @@ from homeassistant.core import ServiceCall, SupportsResponse
 from homeassistant.exceptions import ServiceValidationError
 
 from custom_components.aupu_q360.const import DOMAIN
-from custom_components.aupu_q360.discovery_models import (
-    DiscoveryPhase,
-    DiscoveryProgress,
-    DiscoveryState,
-    DiscoveryStepRequest,
-)
-from custom_components.aupu_q360.errors import DiscoveryWssUnavailableError
+from custom_components.aupu_q360.probe import ProbeError, ProbeResponse
 
 
 def _module():  # type: ignore[no-untyped-def]
@@ -57,71 +51,44 @@ class FakeServiceRegistry:
         self.supports.pop(key, None)
 
 
-class FakeSession:
-    """Expose the exact v2 Action API without transport or device state."""
+class FakeProbe:
+    """Expose only the temporary probe Action and lifecycle API."""
 
     def __init__(self) -> None:
-        self.calls: list[tuple[object, ...]] = []
-        self.start_error: Exception | None = None
+        self.calls: list[str] = []
+        self.error: ProbeError | None = None
 
-    async def async_start(
-        self,
-        all_modes_off_confirmed: bool,
-    ) -> DiscoveryProgress:
-        self.calls.append(("start", all_modes_off_confirmed))
-        if self.start_error is not None:
-            raise self.start_error
-        return DiscoveryProgress(
-            state=DiscoveryState.READY,
-            message_code="discovery_ready_for_step",
-        )
-
-    async def async_begin_step(
-        self,
-        request: DiscoveryStepRequest,
-    ) -> DiscoveryProgress:
-        self.calls.append(("begin", request))
-        return DiscoveryProgress(
-            state=DiscoveryState.AWAITING_OPERATOR,
-            message_code="discovery_prompt_mode_on",
-            phase=DiscoveryPhase.MODE_ON,
-        )
-
-    async def async_advance_step(self) -> DiscoveryProgress:
-        self.calls.append(("advance",))
-        return DiscoveryProgress(
-            state=DiscoveryState.READY,
-            message_code="discovery_cycle_recorded",
-            completed_cycle_count=1,
-        )
-
-    async def async_finish(self) -> dict[str, object]:
-        self.calls.append(("finish",))
+    async def async_start(self) -> ProbeResponse:
+        self.calls.append("start")
+        if self.error is not None:
+            raise self.error
         return {
-            "candidates": [
-                {"classification": "confirmed_candidate"},
-                {"classification": "ambiguous"},
-                {"classification": "ambiguous"},
-                {"classification": "invalid"},
-            ],
-            "coverage": [
-                {"status": "not_started"},
-                {"status": "partial"},
-                {"status": "partial"},
-                {"status": "complete"},
-            ],
+            "state": "active",
+            "message_code": "probe_started",
+            "sample_count": 0,
+            "changes": [],
         }
 
-    async def async_cancel(self) -> DiscoveryProgress:
-        self.calls.append(("cancel",))
-        return DiscoveryProgress(
-            state=DiscoveryState.CANCELLED,
-            message_code="discovery_manual_restore_required",
-            manual_restore_required=True,
-        )
+    async def async_sample(self) -> ProbeResponse:
+        self.calls.append("sample")
+        return {
+            "state": "active",
+            "message_code": "probe_sampled",
+            "sample_count": 1,
+            "changes": [{"path": "service/6/property/2", "before": 3, "after": 4}],
+        }
+
+    async def async_stop_probe(self) -> ProbeResponse:
+        self.calls.append("stop_probe")
+        return {
+            "state": "inactive",
+            "message_code": "probe_stopped",
+            "sample_count": 1,
+            "changes": [],
+        }
 
     async def async_stop(self) -> None:
-        self.calls.append(("stop",))
+        self.calls.append("stop")
 
 
 class FakeConfigEntries:
@@ -139,8 +106,8 @@ class FakeHass:
         self.config_entries = FakeConfigEntries()
 
 
-def _entry(entry_id: str, session: FakeSession | None = None) -> object:
-    runtime = None if session is None else SimpleNamespace(discovery_session=session)
+def _entry(entry_id: str, probe: FakeProbe | None = None) -> object:
+    runtime = None if probe is None else SimpleNamespace(probe=probe)
     return SimpleNamespace(
         entry_id=entry_id,
         domain=DOMAIN,
@@ -166,264 +133,120 @@ async def _call(
 
 
 @pytest.mark.asyncio
-async def test_services_register_once_route_v2_requests_and_unregister_last() -> None:
-    """Catch duplicate handlers, v1 registration, or entry misrouting."""
+async def test_probe_actions_route_by_config_entry_and_return_exact_payloads() -> None:
+    """Catch a probe Action being routed to the wrong loaded Config Entry."""
+    module = _module()
+    first_probe = FakeProbe()
+    second_probe = FakeProbe()
+    hass = FakeHass()
+    hass.config_entries.entries = {
+        "entry-one": _entry("entry-one", first_probe),
+        "entry-two": _entry("entry-two", second_probe),
+    }
+    module.async_register_probe_entry(hass, "entry-one")
+    module.async_register_probe_entry(hass, "entry-two")
+
+    responses = []
+    for action in (module.START_PROBE, module.SAMPLE_PROBE, module.STOP_PROBE):
+        responses.append(await _call(hass, action, {"config_entry_id": "entry-two"}))
+
+    assert [response["message_code"] for response in responses] == [
+        "probe_started",
+        "probe_sampled",
+        "probe_stopped",
+    ]
+    assert first_probe.calls == []
+    assert second_probe.calls == ["start", "sample", "stop_probe"]
+
+
+def test_probe_services_register_once_and_unregister_after_last_entry() -> None:
+    """Catch duplicate registration or premature removal in a multi-entry domain."""
     module = _module()
     hass = FakeHass()
-    first_session = FakeSession()
-    second_session = FakeSession()
-    hass.config_entries.entries = {
-        "entry-one": _entry("entry-one", first_session),
-        "entry-two": _entry("entry-two", second_session),
-    }
 
-    module.async_register_discovery_entry(hass, "entry-one")
-    module.async_register_discovery_entry(hass, "entry-two")
+    module.async_register_probe_entry(hass, "entry-one")
+    module.async_register_probe_entry(hass, "entry-two")
 
     expected_names = {
-        module.START_DISCOVERY,
-        module.BEGIN_DISCOVERY_STEP,
-        module.ADVANCE_DISCOVERY_STEP,
-        module.FINISH_DISCOVERY,
-        module.CANCEL_DISCOVERY,
+        module.START_PROBE,
+        module.SAMPLE_PROBE,
+        module.STOP_PROBE,
     }
     assert {name for domain, name in hass.services.handlers if domain == DOMAIN} == expected_names
-    assert "complete_discovery_step" not in expected_names
-    assert len(hass.services.register_calls) == 5
+    assert len(hass.services.register_calls) == 3
     assert set(hass.services.supports.values()) == {SupportsResponse.OPTIONAL}
 
-    response = await _call(
-        hass,
-        module.BEGIN_DISCOVERY_STEP,
-        {
-            "config_entry_id": "entry-two",
-            "experiment": "night_light",
-            "round": 2,
-        },
-    )
-
-    assert first_session.calls == []
-    call_name, request = second_session.calls[0]
-    assert call_name == "begin"
-    assert isinstance(request, DiscoveryStepRequest)
-    assert request.cycle_id == "night_light:2"
-    assert response == {
-        "state": "awaiting_operator",
-        "message_code": "discovery_prompt_mode_on",
-        "phase": "mode_on",
-        "completed_cycle_count": 0,
-        "manual_restore_required": False,
-    }
-
-    module.async_unregister_discovery_entry(hass, "entry-one")
-    assert len(hass.services.handlers) == 5
-    module.async_unregister_discovery_entry(hass, "entry-two")
+    module.async_unregister_probe_entry(hass, "entry-one")
+    assert len(hass.services.handlers) == 3
+    module.async_unregister_probe_entry(hass, "entry-two")
     assert hass.services.handlers == {}
-    assert len(hass.services.remove_calls) == 5
+    assert len(hass.services.remove_calls) == 3
+
+
+def test_probe_action_schemas_accept_only_config_entry_id() -> None:
+    """Catch operator labels, experiment stages, or arbitrary values reaching a probe."""
+    module = _module()
+    hass = FakeHass()
+    module.async_register_probe_entry(hass, "entry-one")
+
+    for action in (module.START_PROBE, module.SAMPLE_PROBE, module.STOP_PROBE):
+        schema = hass.services.schemas[(DOMAIN, action)]
+        assert schema({"config_entry_id": "entry-one"}) == {"config_entry_id": "entry-one"}
+        for invalid in (
+            {},
+            {"config_entry_id": ""},
+            {"config_entry_id": "entry-one", "experiment": "night_light"},
+            {"config_entry_id": "entry-one", "round": 1},
+            {"config_entry_id": "entry-one", "label": "private"},
+        ):
+            with pytest.raises(vol.Invalid):
+                schema(invalid)
 
 
 @pytest.mark.asyncio
-async def test_begin_action_builds_parameter_request_from_ui_integer_strings() -> None:
-    """Catch UI values bypassing the catalog or reaching the session as free-form fields."""
+async def test_probe_actions_reject_unknown_unloaded_sibling_or_incomplete_runtime() -> None:
+    """Catch Actions reaching an unregistered, sibling, or incomplete runtime."""
     module = _module()
+    probe = FakeProbe()
     hass = FakeHass()
-    session = FakeSession()
-    hass.config_entries.entries["entry-one"] = _entry("entry-one", session)
-    module.async_register_discovery_entry(hass, "entry-one")
-
-    await _call(
-        hass,
-        module.BEGIN_DISCOVERY_STEP,
-        {
-            "config_entry_id": "entry-one",
-            "experiment": "global_fan_level",
-            "round": "2",
-            "source_level": "3",
-            "target_level": "5",
-        },
-    )
-
-    _, request = session.calls[0]
-    assert isinstance(request, DiscoveryStepRequest)
-    assert request.cycle_id == "global_fan_level:3:5:2"
-    assert request.source_level == 3
-    assert request.target_level == 5
-
-
-@pytest.mark.asyncio
-async def test_all_action_responses_are_fixed_and_finish_returns_counts_only() -> None:
-    """Catch reports, identifiers, or restoration details leaking through responses."""
-    module = _module()
-    hass = FakeHass()
-    session = FakeSession()
-    hass.config_entries.entries["entry-one"] = _entry("entry-one", session)
-    module.async_register_discovery_entry(hass, "entry-one")
-    base = {"config_entry_id": "entry-one"}
-
-    assert await _call(
-        hass,
-        module.START_DISCOVERY,
-        {**base, "all_modes_off_confirmed": True},
-    ) == {
-        "state": "ready",
-        "message_code": "discovery_ready_for_step",
-        "completed_cycle_count": 0,
-        "manual_restore_required": False,
-    }
-    assert await _call(hass, module.ADVANCE_DISCOVERY_STEP, base) == {
-        "state": "ready",
-        "message_code": "discovery_cycle_recorded",
-        "completed_cycle_count": 1,
-        "manual_restore_required": False,
-    }
-    finish = await _call(hass, module.FINISH_DISCOVERY, base)
-    assert finish == {
-        "state": "idle",
-        "message_code": "discovery_report_saved",
-        "report_available": True,
-        "confirmed_candidate_count": 1,
-        "ambiguous_count": 2,
-        "observed_unidentified_count": 0,
-        "not_observed_count": 0,
-        "invalid_count": 1,
-        "coverage_not_started_count": 1,
-        "coverage_partial_count": 2,
-        "coverage_complete_count": 1,
-    }
-    assert "candidates" not in finish
-    assert "coverage" not in finish
-    assert await _call(hass, module.CANCEL_DISCOVERY, base) == {
-        "state": "cancelled",
-        "message_code": "discovery_manual_restore_required",
-        "completed_cycle_count": 0,
-        "manual_restore_required": True,
-    }
-
-
-@pytest.mark.asyncio
-async def test_schemas_and_catalog_reject_unknown_extra_or_invalid_field_matrices() -> None:
-    """Catch free text, caller phases, false confirmation, or illegal parameter matrices."""
-    module = _module()
-    hass = FakeHass()
-    session = FakeSession()
-    hass.config_entries.entries["entry-one"] = _entry("entry-one", session)
-    module.async_register_discovery_entry(hass, "entry-one")
-
-    start_schema = hass.services.schemas[(DOMAIN, module.START_DISCOVERY)]
-    for invalid in (
-        {},
-        {"config_entry_id": "entry-one"},
-        {"config_entry_id": "entry-one", "all_modes_off_confirmed": False},
-        {"config_entry_id": "entry-one", "all_modes_off_confirmed": 1},
-        {
-            "config_entry_id": "entry-one",
-            "all_modes_off_confirmed": True,
-            "archive_path": "/private",
-        },
-    ):
-        with pytest.raises(vol.Invalid):
-            start_schema(invalid)
-
-    begin_schema = hass.services.schemas[(DOMAIN, module.BEGIN_DISCOVERY_STEP)]
-    for invalid in (
-        {},
-        {"config_entry_id": "entry-one", "free_text": "private"},
-        {
-            "config_entry_id": "entry-one",
-            "experiment": "unknown",
-            "round": 1,
-        },
-        {
-            "config_entry_id": "entry-one",
-            "experiment": "night_light",
-            "round": 3,
-        },
-        {
-            "config_entry_id": "entry-one",
-            "experiment": "night_light",
-            "round": 1,
-            "phase": "mode_on",
-        },
-    ):
-        with pytest.raises(vol.Invalid):
-            begin_schema(invalid)
-
-    invalid_matrices = (
-        {"experiment": "night_light", "round": 1, "source_level": 3},
-        {
-            "experiment": "global_fan_level",
-            "round": 1,
-            "source_level": 3,
-            "target_level": 3,
-        },
-        {
-            "experiment": "ai_target_temperature",
-            "round": 1,
-            "source_temperature": 35,
-            "target_temperature": 37,
-        },
-    )
-    for fields in invalid_matrices:
-        with pytest.raises(ServiceValidationError) as raised:
-            await _call(
-                hass,
-                module.BEGIN_DISCOVERY_STEP,
-                {"config_entry_id": "entry-one", **fields},
-            )
-        assert raised.value.translation_key == "discovery_invalid_parameter"
-    assert session.calls == []
-
-
-@pytest.mark.asyncio
-async def test_actions_reject_unknown_unloaded_sibling_or_incomplete_sessions() -> None:
-    """Catch actions reaching a missing Config Entry or a non-v2 runtime object."""
-    module = _module()
-    hass = FakeHass()
-    session = FakeSession()
     hass.config_entries.entries = {
-        "entry-one": _entry("entry-one", session),
+        "entry-one": _entry("entry-one", probe),
         "entry-unloaded": _entry("entry-unloaded", None),
         "entry-sibling": SimpleNamespace(
             entry_id="entry-sibling",
             domain="other_domain",
-            runtime_data=SimpleNamespace(discovery_session=session),
+            runtime_data=SimpleNamespace(probe=probe),
         ),
     }
-    module.async_register_discovery_entry(hass, "entry-one")
+    module.async_register_probe_entry(hass, "entry-one")
 
     for entry_id in ("missing", "entry-unloaded", "entry-sibling"):
         with pytest.raises(ServiceValidationError) as raised:
             await _call(
                 hass,
-                module.START_DISCOVERY,
-                {
-                    "config_entry_id": entry_id,
-                    "all_modes_off_confirmed": True,
-                },
+                module.START_PROBE,
+                {"config_entry_id": entry_id},
             )
-        assert raised.value.translation_key == "discovery_invalid_transition"
+        assert raised.value.translation_key == "probe_inactive"
 
 
 @pytest.mark.asyncio
-async def test_discovery_errors_become_translatable_fixed_service_errors() -> None:
+async def test_probe_errors_become_translatable_fixed_service_errors() -> None:
     """Catch transport or payload context escaping from an Action exception."""
     module = _module()
+    probe = FakeProbe()
+    probe.error = ProbeError("probe_wss_unavailable")
     hass = FakeHass()
-    session = FakeSession()
-    session.start_error = DiscoveryWssUnavailableError()
-    hass.config_entries.entries["entry-one"] = _entry("entry-one", session)
-    module.async_register_discovery_entry(hass, "entry-one")
+    hass.config_entries.entries["entry-one"] = _entry("entry-one", probe)
+    module.async_register_probe_entry(hass, "entry-one")
 
     with pytest.raises(ServiceValidationError) as raised:
         await _call(
             hass,
-            module.START_DISCOVERY,
-            {
-                "config_entry_id": "entry-one",
-                "all_modes_off_confirmed": True,
-            },
+            module.START_PROBE,
+            {"config_entry_id": "entry-one"},
         )
 
-    assert str(raised.value) == "discovery_wss_unavailable"
+    assert str(raised.value) == "probe_wss_unavailable"
     assert raised.value.translation_domain == DOMAIN
-    assert raised.value.translation_key == "discovery_wss_unavailable"
+    assert raised.value.translation_key == "probe_wss_unavailable"

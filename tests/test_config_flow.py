@@ -31,13 +31,13 @@ from custom_components.aupu_q360.config_flow import (
     AupuOptionsFlow,
 )
 from custom_components.aupu_q360.const import DOMAIN
-from custom_components.aupu_q360.discovery import PanelStateDiscoverySession
 from custom_components.aupu_q360.errors import AupuProtocolError, AupuTemporaryError
 from custom_components.aupu_q360.models import (
     ApiResponse,
     AupuConfigEntryData,
     AupuRuntimeData,
 )
+from custom_components.aupu_q360.probe import PanelStateProbe
 from custom_components.aupu_q360.signer import AppAuthorizationSigner
 
 SYNTHETIC_SIGNER = {
@@ -410,126 +410,44 @@ def test_user_step_defaults_to_https_only_without_network(
         "did": "123456789",
         "tag": "synthetic-tag",
         "use_wss": False,
-        "raw_archive_enabled": False,
     }
     assert json.loads(json.dumps(result["data"])) == result["data"]
     assert calls == 0
     assert flow.unique_id == "15e2b0d3c33891ebb0f1"
 
 
-def test_raw_archive_model_defaults_false_and_rejects_non_boolean_values() -> None:
-    """Catch legacy entries enabling archiving implicitly or truthy values bypassing validation."""
-    legacy = persisted_data()
-    del legacy["raw_archive_enabled"]
+def test_legacy_raw_archive_key_is_ignored_and_not_reemitted() -> None:
+    """Catch a legacy archive preference remaining in normalized Config Entry data."""
+    legacy = persisted_data(raw_archive_enabled=True)
 
     normalized = AupuConfigEntryData.from_mapping(legacy)
 
-    assert normalized.raw_archive_enabled is False
-    assert normalized.as_mapping()["raw_archive_enabled"] is False
-    for invalid in (None, 0, 1, "false", [], {}):
-        with pytest.raises(TypeError):
-            AupuConfigEntryData.from_mapping({**legacy, "raw_archive_enabled": invalid})
+    assert "raw_archive_enabled" not in normalized.as_mapping()
 
 
-def test_options_expose_only_a_boolean_archive_preference() -> None:
-    """Catch a caller-controlled archive path or absent legacy default entering Options."""
-    legacy = persisted_data()
-    del legacy["raw_archive_enabled"]
-    entry = FakeEntry(data=legacy)
+def test_options_reject_legacy_archive_fields() -> None:
+    """Catch a removed archive preference or caller-controlled path entering Options."""
+    entry = FakeEntry(data=persisted_data(raw_archive_enabled=True))
     flow, _ = prepare_options_flow(entry)
 
     form = _run(flow.async_step_init())
     schema = form["data_schema"]
     assert schema is not None
-    validated = schema({"token": "", "phone": "", "use_wss": False})
-
-    assert validated["raw_archive_enabled"] is False
-    with pytest.raises(vol.Invalid):
-        schema(
-            {
-                "token": "",
-                "phone": "",
-                "use_wss": False,
-                "raw_archive_enabled": False,
-                "raw_archive_path": "/private",
-            }
-        )
-
-
-def test_enabling_archive_option_performs_no_filesystem_or_network_work(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Catch Options checking or creating the fixed mount before discovery starts."""
-    entry = FakeEntry(data=persisted_data())
-    flow, hass = prepare_options_flow(entry)
-    archive_calls = 0
-    network_calls = 0
-
-    async def archive_spy(*args: object, **kwargs: object) -> object:
-        nonlocal archive_calls
-        del args, kwargs
-        archive_calls += 1
-        return object()
-
-    async def network_spy(*args: object, **kwargs: object) -> str:
-        nonlocal network_calls
-        del args, kwargs
-        network_calls += 1
-        return "must-not-be-used"
-
-    monkeypatch.setattr(
-        "custom_components.aupu_q360.RawDiscoveryArchive.async_open",
-        archive_spy,
-    )
-    monkeypatch.setattr(
-        "custom_components.aupu_q360.config_flow._async_verify_terminal_info",
-        network_spy,
-    )
-    monkeypatch.setattr(
-        "custom_components.aupu_q360.async_get_clientsession",
-        lambda _: object(),
-    )
-
-    result = _run(
-        flow.async_step_init(
-            {
-                "token": "",
-                "phone": "",
-                "use_wss": False,
-                "raw_archive_enabled": True,
-            }
-        )
-    )
-
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert entry.data["raw_archive_enabled"] is True
-    assert hass.config_entries.update_calls == 1
-    assert hass.config_entries.reload_calls == 1
-    assert archive_calls == 0
-    assert network_calls == 0
-
-
-def test_options_reject_non_boolean_archive_preference_without_persisting() -> None:
-    """Catch a truthy string enabling private raw retention."""
-    old_data = persisted_data()
-    entry = FakeEntry(data=dict(old_data))
-    flow, hass = prepare_options_flow(entry)
-
-    result = _run(
-        flow.async_step_init(
-            {
-                "token": "",
-                "phone": "",
-                "use_wss": False,
-                "raw_archive_enabled": "yes",
-            }
-        )
-    )
-
-    assert result["type"] is FlowResultType.FORM
-    assert entry.data == old_data
-    assert hass.config_entries.update_calls == 0
-    assert hass.config_entries.reload_calls == 0
+    assert schema({"token": "", "phone": "", "use_wss": False}) == {
+        "token": "",
+        "phone": "",
+        "use_wss": False,
+    }
+    for legacy_field in ("raw_archive_enabled", "raw_archive_path"):
+        with pytest.raises(vol.Invalid):
+            schema(
+                {
+                    "token": "",
+                    "phone": "",
+                    "use_wss": False,
+                    legacy_field: True,
+                }
+            )
 
 
 @pytest.mark.parametrize(
@@ -667,17 +585,19 @@ def persisted_data(
     *,
     token: str | None = None,
     use_wss: bool = False,
-    raw_archive_enabled: bool = False,
+    raw_archive_enabled: bool | None = None,
 ) -> dict[str, object]:
     """Build a valid synthetic entry payload."""
-    return {
+    result: dict[str, object] = {
         "signer": dict(SYNTHETIC_SIGNER),
         "token": token or valid_token(),
         "did": "123456789",
         "tag": "synthetic-tag",
         "use_wss": use_wss,
-        "raw_archive_enabled": raw_archive_enabled,
     }
+    if raw_archive_enabled is not None:
+        result["raw_archive_enabled"] = raw_archive_enabled
+    return result
 
 
 def test_options_invalid_token_keeps_loaded_runtime_unchanged(
@@ -900,7 +820,6 @@ def test_options_enabling_wss_waits_for_confirmation(
                 "token": valid_token(),
                 "phone": "",
                 "use_wss": True,
-                "raw_archive_enabled": True,
             }
         )
     )
@@ -915,7 +834,7 @@ def test_options_enabling_wss_waits_for_confirmation(
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert entry.data["use_wss"] is True
-    assert entry.data["raw_archive_enabled"] is True
+    assert "raw_archive_enabled" not in entry.data
     assert entry.data["user_uuid"] == "synthetic-user-uuid"
     assert hass.config_entries.update_calls == 1
     assert hass.config_entries.reload_calls == 1
@@ -959,8 +878,9 @@ def test_manual_reauth_accepts_only_a_new_valid_token_and_reloads_once(
 
     assert success["type"] is FlowResultType.ABORT
     assert success["reason"] == "reauth_successful"
-    assert entry.data == {**old_data, "token": replacement}
-    assert set(entry.data) == set(old_data)
+    expected = {**old_data, "token": replacement}
+    expected.pop("raw_archive_enabled")
+    assert entry.data == expected
     assert hass.config_entries.update_calls == 1
     assert hass.config_entries.reload_calls == 1
 
@@ -1290,36 +1210,26 @@ def test_setup_builds_runtime_and_forwards_light_without_network(
     assert isinstance(entry.runtime_data.signer, AppAuthorizationSigner)
     assert entry.runtime_data.device.did == "123456789"
     assert entry.runtime_data.credential.authorization_header.startswith("Bearer ")
-    assert isinstance(entry.runtime_data.discovery_session, PanelStateDiscoverySession)
-    assert entry.runtime_data.discovery_session._archive_factory is None
+    assert isinstance(entry.runtime_data.probe, PanelStateProbe)
     assert entry.runtime_data.stoppers == [
-        entry.runtime_data.discovery_session,
+        entry.runtime_data.probe,
         entry.runtime_data.coordinator,
     ]
     assert hass.config_entries.forwarded == (Platform.LIGHT, Platform.BINARY_SENSOR)
-    assert len(hass.services.handlers) == 5
+    assert len(hass.services.handlers) == 3
 
 
-def test_setup_binds_enabled_archive_factory_without_opening_fixed_root(
+def test_setup_ignores_legacy_archive_key_without_rewriting_entry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Catch setup touching the filesystem or passing a caller-controlled archive root."""
+    """Catch setup touching legacy archive state or rewriting data only for upgrade."""
     entry = FakeEntry(data=persisted_data(raw_archive_enabled=True))
+    original_data = dict(entry.data)
     hass = FakeHass(FakeConfigEntries(entry))
-    open_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
-    marker = object()
-
-    async def archive_open_spy(*args: object, **kwargs: object) -> object:
-        open_calls.append((args, kwargs))
-        return marker
 
     monkeypatch.setattr(
         "custom_components.aupu_q360.async_get_clientsession",
         lambda _: object(),
-    )
-    monkeypatch.setattr(
-        "custom_components.aupu_q360.RawDiscoveryArchive.async_open",
-        archive_open_spy,
     )
 
     result = _run(
@@ -1328,19 +1238,9 @@ def test_setup_binds_enabled_archive_factory_without_opening_fixed_root(
 
     assert result is True
     assert entry.runtime_data is not None
-    discovery_session = entry.runtime_data.discovery_session
-    assert isinstance(discovery_session, PanelStateDiscoverySession)
-    assert discovery_session._archive_factory is not None
-    assert open_calls == []
-
-    opened = _run(discovery_session._archive_factory(lambda _: None))
-
-    assert opened is marker
-    assert len(open_calls) == 1
-    args, kwargs = open_calls[0]
-    assert len(args) == 1
-    assert callable(args[0])
-    assert kwargs == {}
+    assert isinstance(entry.runtime_data.probe, PanelStateProbe)
+    assert entry.data == original_data
+    assert hass.config_entries.update_calls == 0
 
 
 class Stopper:

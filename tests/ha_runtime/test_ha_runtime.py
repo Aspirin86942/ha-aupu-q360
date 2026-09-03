@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import hashlib
 import json
-import stat
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -33,17 +31,12 @@ from custom_components.aupu_q360.const import DOMAIN
 from custom_components.aupu_q360.diagnostics import (
     async_get_config_entry_diagnostics,
 )
-from custom_components.aupu_q360.discovery_store import DiscoveryReportStore
-from custom_components.aupu_q360.errors import DiscoveryRawArchiveUnavailableError
 from custom_components.aupu_q360.models import ApiResponse
 from custom_components.aupu_q360.mqtt_codec import decode_packets, encode_publish
-from custom_components.aupu_q360.raw_discovery_archive import RawDiscoveryArchive
 from custom_components.aupu_q360.services import (
-    ADVANCE_DISCOVERY_STEP,
-    BEGIN_DISCOVERY_STEP,
-    CANCEL_DISCOVERY,
-    FINISH_DISCOVERY,
-    START_DISCOVERY,
+    SAMPLE_PROBE,
+    START_PROBE,
+    STOP_PROBE,
 )
 from custom_components.aupu_q360.shadow import LightShadowUpdate
 from custom_components.aupu_q360.wss import AupuShadowWebSocket
@@ -228,7 +221,7 @@ def _shadow_state(
     }
 
 
-async def _call_discovery_snapshot_action(
+async def _call_probe_snapshot_action(
     hass: HomeAssistant,
     websocket: _FakeWebSocket,
     service: str,
@@ -286,11 +279,9 @@ def test_services_yaml_matches_home_assistant_runtime_schema() -> None:
     descriptions = _SERVICES_SCHEMA(load_yaml_dict(str(services_path)))
 
     assert set(descriptions) == {
-        "start_discovery",
-        "begin_discovery_step",
-        "advance_discovery_step",
-        "finish_discovery",
-        "cancel_discovery",
+        "start_probe",
+        "sample_probe",
+        "stop_probe",
     }
 
 
@@ -410,11 +401,9 @@ async def test_real_entry_manager_exposes_one_light_service_and_diagnostics(
         "last_error_code",
         "light_state_source",
         "assumed_state",
-        "state_discovery",
     }
     assert diagnostics["last_error_code"] == "none"
     assert diagnostics["light_state_source"] == "command"
-    assert diagnostics["state_discovery"] == {"report_available": False}
 
     await _unload(hass, entry)
     assert not hasattr(entry, "runtime_data")
@@ -561,22 +550,16 @@ async def test_real_entry_manager_starts_and_stops_fake_wss_without_task_leak(
     assert websocket.close_calls == 1
 
 
-async def test_real_services_complete_sanitized_discovery_and_remove_private_store(
+async def test_real_services_sample_temporary_probe_without_persistence_or_control(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
 ) -> None:
-    """Run the complete v2 matrix through real services, archive, Store, and reload."""
+    """Run the three probe Actions through real HA services and an in-memory WSS."""
     initial_websocket = _FakeWebSocket()
     websocket = _FakeWebSocket()
-    reload_websocket = _FakeWebSocket()
-    session = _FakeSession([initial_websocket, websocket, reload_websocket])
+    session = _FakeSession([initial_websocket, websocket])
     sleep = _ControlledSleep()
     original_init = AupuShadowWebSocket.__init__
-    archive_root = tmp_path / "private-archive"
-    archive_root.mkdir(mode=0o700)
-    archive_root.chmod(0o700)
-    original_archive_open = RawDiscoveryArchive.async_open.__func__
     control_calls: list[bool] = []
     credential_calls = 0
 
@@ -601,24 +584,11 @@ async def test_real_services_complete_sanitized_discovery_and_remove_private_sto
     async def fake_set_light(self: AupuApiClient, is_on: bool) -> ApiResponse:
         del self
         control_calls.append(is_on)
-        raise AssertionError("discovery attempted an HTTPS control call")
-
-    async def open_temporary_archive(
-        cls: type[RawDiscoveryArchive],
-        on_failure: Callable[[str], None],
-        **kwargs: object,
-    ) -> RawDiscoveryArchive:
-        assert kwargs == {}
-        return await original_archive_open(cls, on_failure, root=archive_root)
+        raise AssertionError("probe attempted an HTTPS control call")
 
     monkeypatch.setattr(AupuShadowWebSocket, "__init__", init_with_fake_sleep)
     monkeypatch.setattr(AupuApiClient, "get_wss_credentials", fake_get_wss_credentials)
     monkeypatch.setattr(AupuApiClient, "set_light", fake_set_light)
-    monkeypatch.setattr(
-        RawDiscoveryArchive,
-        "async_open",
-        classmethod(open_temporary_archive),
-    )
     monkeypatch.setattr(
         "custom_components.aupu_q360.async_get_clientsession",
         lambda _: session,
@@ -626,28 +596,20 @@ async def test_real_services_complete_sanitized_discovery_and_remove_private_sto
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="AUPU Q360",
-        unique_id="synthetic-discovery-entry",
+        unique_id="synthetic-probe-entry",
         data=_entry_data(
-            token=_jwt(expires_in=7 * 24 * 60 * 60, subject="synthetic-discovery"),
+            token=_jwt(expires_in=7 * 24 * 60 * 60, subject="synthetic-probe"),
             use_wss=True,
             user_uuid="synthetic-user-uuid",
             raw_archive_enabled=True,
         ),
     )
     entry.add_to_hass(hass)
-    current = asyncio.current_task()
-    tasks_before = {task for task in asyncio.all_tasks() if task is not current}
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     await initial_websocket.receive_started.wait()
     await _wait_until(lambda: sleep.delays == [30])
-    for service in (
-        START_DISCOVERY,
-        BEGIN_DISCOVERY_STEP,
-        ADVANCE_DISCOVERY_STEP,
-        FINISH_DISCOVERY,
-        CANCEL_DISCOVERY,
-    ):
+    for service in (START_PROBE, SAMPLE_PROBE, STOP_PROBE):
         assert hass.services.has_service(DOMAIN, service)
 
     base = {"config_entry_id": entry.entry_id}
@@ -655,8 +617,8 @@ async def test_real_services_complete_sanitized_discovery_and_remove_private_sto
     start_task = asyncio.create_task(
         hass.services.async_call(
             DOMAIN,
-            START_DISCOVERY,
-            {**base, "all_modes_off_confirmed": True},
+            START_PROBE,
+            base,
             blocking=True,
             return_response=True,
         )
@@ -665,377 +627,105 @@ async def test_real_services_complete_sanitized_discovery_and_remove_private_sto
     await _wait_until(lambda: len(websocket.sent) == 4)
     assert initial_websocket.sent[-1] == b"\xe0\x00"
     assert initial_websocket.close_calls == 1
-    assert initial_websocket.closed is True
     assert credential_calls == 2
     assert start_task.done() is False
-    assert all(
-        json.loads(packet.payload).get("clientToken") is None
-        for raw in websocket.sent
-        if (packet := decode_packets(raw)[0]).packet_type.name == "PUBLISH"
-    )
 
     await sleep.release_next()
     await _wait_until(lambda: websocket.sent[-1] == b"\xc0\x00")
     websocket.queue_binary(b"\xd0\x00")
-    await asyncio.sleep(0.01)
     await _wait_until(lambda: len(websocket.sent) == 6)
     request_packet = decode_packets(websocket.sent[-1])[0]
     request = json.loads(request_packet.payload)
-    client_token = request["clientToken"]
+    token = request["clientToken"]
     websocket.queue_binary(
         encode_publish(
             "$aws/things/123456789/shadow/get/accepted",
             json.dumps(
-                {"clientToken": client_token, "state": baseline},
+                {"clientToken": token, "state": baseline},
                 separators=(",", ":"),
             ).encode(),
         )
     )
-    start_response = await start_task
-    assert isinstance(start_response, dict)
-    assert start_response == {
-        "state": "ready",
-        "message_code": "discovery_ready_for_step",
-        "completed_cycle_count": 0,
-        "manual_restore_required": False,
+    assert await start_task == {
+        "state": "active",
+        "message_code": "probe_started",
+        "sample_count": 0,
+        "changes": [],
     }
 
-    completed_cycles = 0
-
-    async def begin_cycle(
-        experiment: str,
-        round_number: int,
-        **parameters: int,
-    ) -> dict[str, Any]:
-        return await _call_discovery_snapshot_action(
-            hass,
-            websocket,
-            BEGIN_DISCOVERY_STEP,
-            {
-                **base,
-                "experiment": experiment,
-                "round": round_number,
-                **parameters,
-            },
-            baseline,
-        )
-
-    async def advance_cycle(state: dict[str, object]) -> dict[str, Any]:
-        return await _call_discovery_snapshot_action(
-            hass,
-            websocket,
-            ADVANCE_DISCOVERY_STEP,
-            base,
-            state,
-        )
-
-    for round_number in (1, 2):
-        begin_response = await begin_cycle("idle_environment", round_number)
-        assert begin_response["phase"] == "idle_observation"
-        completed_cycles += 1
-        idle_response = await advance_cycle(baseline)
-        assert idle_response["message_code"] == "discovery_cycle_recorded"
-        assert idle_response["completed_cycle_count"] == completed_cycles
-
-    for round_number in (1, 2):
-        begin_response = await begin_cycle("night_light", round_number)
-        assert begin_response["phase"] == "mode_on"
-        panel_on = _shadow_state(is_on=True, night_light=True)
-        await _queue_shadow_update(hass, websocket, panel_on)
-        restore_prompt = await advance_cycle(panel_on)
-        assert restore_prompt["phase"] == "mode_restore"
-        assert restore_prompt["manual_restore_required"] is True
-        if round_number == 1:
-            restore_required = await advance_cycle(panel_on)
-            assert restore_required["state"] == "restore_required"
-            assert restore_required["message_code"] == "discovery_restore_required"
-            assert restore_required["phase"] == "mode_restore"
-        await _queue_shadow_update(hass, websocket, baseline)
-        completed_cycles += 1
-        mode_response = await advance_cycle(baseline)
-        assert mode_response["message_code"] == "discovery_cycle_recorded"
-        assert mode_response["completed_cycle_count"] == completed_cycles
-
-    for target_level in (1, 2, 4, 5):
-        for round_number in (1, 2):
-            begin_response = await begin_cycle(
-                "global_fan_level",
-                round_number,
-                source_level=3,
-                target_level=target_level,
-            )
-            assert begin_response["phase"] == "carrier_on"
-            for phase, state in (
-                ("parameter_change", _shadow_state(ventilation=True)),
-                (
-                    "parameter_restore",
-                    _shadow_state(ventilation=True, fan_level=target_level),
-                ),
-                ("carrier_off", _shadow_state(ventilation=True)),
-            ):
-                progress = await advance_cycle(state)
-                assert progress["phase"] == phase
-            completed_cycles += 1
-            fan_response = await advance_cycle(baseline)
-            assert fan_response["message_code"] == "discovery_cycle_recorded"
-            assert fan_response["completed_cycle_count"] == completed_cycles
-
-    for round_number in (1, 2):
-        begin_response = await begin_cycle(
-            "ai_target_temperature",
-            round_number,
-            source_temperature=35,
-            target_temperature=36,
-        )
-        assert begin_response["phase"] == "carrier_on"
-        for phase, state in (
-            ("parameter_change", _shadow_state(ai_warmth=True)),
-            (
-                "parameter_restore",
-                _shadow_state(ai_warmth=True, temperature=36),
-            ),
-            ("carrier_off", _shadow_state(ai_warmth=True)),
-        ):
-            progress = await advance_cycle(state)
-            assert progress["phase"] == phase
-        completed_cycles += 1
-        temperature_response = await advance_cycle(baseline)
-        assert temperature_response["message_code"] == "discovery_cycle_recorded"
-        assert temperature_response["completed_cycle_count"] == completed_cycles
-
-    assert completed_cycles == 14
-
-    finish_response = await hass.services.async_call(
-        DOMAIN,
-        FINISH_DISCOVERY,
-        base,
-        blocking=True,
-        return_response=True,
-    )
-    assert set(finish_response) == {
-        "state",
-        "message_code",
-        "report_available",
-        "confirmed_candidate_count",
-        "ambiguous_count",
-        "observed_unidentified_count",
-        "not_observed_count",
-        "invalid_count",
-        "coverage_not_started_count",
-        "coverage_partial_count",
-        "coverage_complete_count",
-    }
-    assert finish_response["state"] == "idle"
-    assert finish_response["message_code"] == "discovery_report_saved"
-    assert finish_response["report_available"] is True
-    assert finish_response["coverage_complete_count"] == 4
-    assert finish_response["coverage_not_started_count"] == 6
-
-    diagnostics = await async_get_config_entry_diagnostics(hass, entry)
-    discovery_diagnostics = diagnostics["state_discovery"]
-    assert discovery_diagnostics["report_available"] is True
-    report = discovery_diagnostics["report"]
-    assert report["schema_version"] == 2
-    assert report["statistics"]["completed_cycles"] == completed_cycles
-    coverage = {row["experiment"]: row["status"] for row in report["coverage"]}
-    assert coverage["idle_environment"] == "complete"
-    assert coverage["night_light"] == "complete"
-    assert coverage["global_fan_level"] == "complete"
-    assert coverage["ai_target_temperature"] == "complete"
-    assert any(
-        candidate["path"] == "service/6/property/2"
-        and candidate["classification"] == "confirmed_candidate"
-        for candidate in report["candidates"]
-    )
-    serialized = json.dumps(report, sort_keys=True)
-    assert "123456789" not in serialized
-    assert entry.entry_id not in serialized
-    assert "clientToken" not in serialized
-    assert "$aws/things/" not in serialized
-    assert "synthetic-private-raw-marker" not in serialized
-    assert str(archive_root) not in serialized
-
-    archive = report["raw_archive"]
-    assert archive["enabled"] is True
-    assert archive["status"] == "complete"
-    archive_directory = archive_root / archive["session_id"]
-    events_path = archive_directory / "events.jsonl"
-    manifest_path = archive_directory / "manifest.json"
-    events_bytes = events_path.read_bytes()
-    lines = events_bytes.splitlines()
-    assert len(lines) == archive["event_count"]
-    assert len(events_bytes) == archive["file_bytes"]
-    assert hashlib.sha256(events_bytes).hexdigest() == archive["sha256"]
-    assert stat.S_IMODE(archive_directory.stat().st_mode) == 0o700
-    assert stat.S_IMODE(events_path.stat().st_mode) == 0o600
-    assert stat.S_IMODE(manifest_path.stat().st_mode) == 0o600
-    assert any(
-        b"synthetic-private-raw-marker" in base64.b64decode(json.loads(line)["payload_base64"])
-        for line in lines
-    )
-    entities = er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
-    light = next(entity for entity in entities if entity.domain == "light")
-    light_state = hass.states.get(light.entity_id)
-    assert light_state is not None
-    assert light_state.state == "off"
-    assert light_state.attributes["state_source"] == "get_reported"
-    assert control_calls == []
-
-    report_store = entry.runtime_data.discovery_store
-    await _unload(hass, entry)
-    assert await report_store.async_load() == report
-    for service in (
-        START_DISCOVERY,
-        BEGIN_DISCOVERY_STEP,
-        ADVANCE_DISCOVERY_STEP,
-        FINISH_DISCOVERY,
-        CANCEL_DISCOVERY,
-    ):
-        assert not hass.services.has_service(DOMAIN, service)
-
-    assert await hass.config_entries.async_setup(entry.entry_id)
-    await _wait_until(lambda: entry.runtime_data.coordinator.discovery_available)
-    assert len(session.calls) == 3
-    reloaded_diagnostics = await async_get_config_entry_diagnostics(hass, entry)
-    assert reloaded_diagnostics["state_discovery"]["report"] == report
-    assert len(tuple(archive_root.iterdir())) == 1
-
-    await hass.config_entries.async_remove(entry.entry_id)
-    await hass.async_block_till_done()
-    removed_store = DiscoveryReportStore(hass, entry.entry_id, lambda report: report)
-    assert await removed_store.async_load() is None
-    for service in (
-        START_DISCOVERY,
-        BEGIN_DISCOVERY_STEP,
-        ADVANCE_DISCOVERY_STEP,
-        FINISH_DISCOVERY,
-        CANCEL_DISCOVERY,
-    ):
-        assert not hass.services.has_service(DOMAIN, service)
-    assert events_path.exists()
-    await asyncio.sleep(0)
-    tasks_after = {
-        task
-        for task in asyncio.all_tasks()
-        if task is not current
-        and not task.done()
-        and (
-            task.get_name().startswith("aupu_q360_wss")
-            or task.get_name().startswith("aupu_q360_discovery")
-        )
-    }
-    assert tasks_after <= tasks_before
-
-
-async def test_real_archive_mount_failure_precedes_discovery_network_and_control(
-    hass: HomeAssistant,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """Catch an unavailable private mount sending a correlated get or device control."""
-    initial_websocket = _FakeWebSocket()
-    websocket = _FakeWebSocket()
-    session = _FakeSession([initial_websocket, websocket])
-    sleep = _ControlledSleep()
-    original_init = AupuShadowWebSocket.__init__
-    original_archive_open = RawDiscoveryArchive.async_open.__func__
-    missing_root = tmp_path / "missing-private-archive"
-    control_calls: list[bool] = []
-
-    def init_with_fake_sleep(
-        client: AupuShadowWebSocket,
-        *args: object,
-        **kwargs: object,
-    ) -> None:
-        kwargs["sleep"] = sleep
-        original_init(client, *args, **kwargs)
-
-    async def fake_get_wss_credentials(self: AupuApiClient) -> WssCredentials:
-        del self
-        return WssCredentials(
-            authorizer_name="synthetic-authorizer",
-            signature="synthetic-signature-1",
-            token_key_name="synthetic-token-key",
-        )
-
-    async def fake_set_light(self: AupuApiClient, is_on: bool) -> ApiResponse:
-        del self
-        control_calls.append(is_on)
-        return ApiResponse(status=200, result={}, timestamp=0)
-
-    async def open_missing_archive(
-        cls: type[RawDiscoveryArchive],
-        on_failure: Callable[[str], None],
-        **kwargs: object,
-    ) -> RawDiscoveryArchive:
-        assert kwargs == {}
-        return await original_archive_open(cls, on_failure, root=missing_root)
-
-    monkeypatch.setattr(AupuShadowWebSocket, "__init__", init_with_fake_sleep)
-    monkeypatch.setattr(AupuApiClient, "get_wss_credentials", fake_get_wss_credentials)
-    monkeypatch.setattr(AupuApiClient, "set_light", fake_set_light)
-    monkeypatch.setattr(
-        RawDiscoveryArchive,
-        "async_open",
-        classmethod(open_missing_archive),
-    )
-    monkeypatch.setattr(
-        "custom_components.aupu_q360.async_get_clientsession",
-        lambda _: session,
-    )
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        title="AUPU Q360",
-        unique_id="synthetic-missing-archive-entry",
-        data=_entry_data(
-            token=_jwt(expires_in=7 * 24 * 60 * 60, subject="synthetic-missing-archive"),
-            use_wss=True,
-            user_uuid="synthetic-user-uuid",
-            raw_archive_enabled=True,
-        ),
-    )
-    entry.add_to_hass(hass)
-
-    assert await hass.config_entries.async_setup(entry.entry_id)
-    await _wait_until(lambda: entry.runtime_data.coordinator.discovery_available)
-    start_task = asyncio.create_task(
+    changed = _shadow_state(ventilation=True, fan_level=4)
+    sent_before = len(websocket.sent)
+    sample_task = asyncio.create_task(
         hass.services.async_call(
             DOMAIN,
-            START_DISCOVERY,
-            {
-                "config_entry_id": entry.entry_id,
-                "all_modes_off_confirmed": True,
-            },
+            SAMPLE_PROBE,
+            base,
             blocking=True,
             return_response=True,
         )
     )
-    await _wait_until(lambda: len(session.calls) == 2)
-    await _wait_until(lambda: len(websocket.sent) == 4)
-    await sleep.release_next()
-    await _wait_until(lambda: websocket.sent[-1] == b"\xc0\x00")
-    websocket.queue_binary(b"\xd0\x00")
+    await _wait_until(lambda: len(websocket.sent) > sent_before)
+    await _queue_shadow_update(hass, websocket, _shadow_state(is_on=True))
+    assert sample_task.done() is False
+    entities = er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
+    light = next(entity for entity in entities if entity.domain == "light")
+    light_state = hass.states.get(light.entity_id)
+    assert light_state is not None
+    assert light_state.state == "on"
 
-    with pytest.raises(ServiceValidationError) as raised:
-        await start_task
-
-    assert raised.value.translation_key == DiscoveryRawArchiveUnavailableError.error_code
-    assert initial_websocket.close_calls == 1
-    assert not any(
-        json.loads(packet.payload).get("clientToken")
-        for raw in websocket.sent
-        if (packet := decode_packets(raw)[0]).packet_type.name == "PUBLISH"
+    sample_packet = decode_packets(websocket.sent[-1])[0]
+    sample_request = json.loads(sample_packet.payload)
+    websocket.queue_binary(
+        encode_publish(
+            "$aws/things/123456789/shadow/get/accepted",
+            json.dumps(
+                {"clientToken": sample_request["clientToken"], "state": changed},
+                separators=(",", ":"),
+            ).encode(),
+        )
     )
-    assert entry.runtime_data.discovery_session.state.value == "idle"
+    assert await sample_task == {
+        "state": "active",
+        "message_code": "probe_sampled",
+        "sample_count": 1,
+        "changes": [
+            {"path": "service/6/property/1", "before": False, "after": True},
+            {"path": "service/6/property/2", "before": 3, "after": 4},
+        ],
+    }
+
+    stop_response = await hass.services.async_call(
+        DOMAIN,
+        STOP_PROBE,
+        base,
+        blocking=True,
+        return_response=True,
+    )
+    assert stop_response == {
+        "state": "inactive",
+        "message_code": "probe_stopped",
+        "sample_count": 1,
+        "changes": [],
+    }
+    diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+    assert "state_" + "discovery" not in diagnostics
+    storage = Path(hass.config.path(".storage"))
+    if storage.exists():
+        assert not any(
+            "probe" in path.name or "discovery" in path.name for path in storage.iterdir()
+        )
     assert control_calls == []
-    assert not missing_root.exists()
+    assert entry.data["raw_archive_enabled"] is True
+
     await _unload(hass, entry)
+    for service in (START_PROBE, SAMPLE_PROBE, STOP_PROBE):
+        assert not hass.services.has_service(DOMAIN, service)
 
 
 async def test_real_services_remain_registered_until_final_entry_unloads(
     hass: HomeAssistant,
 ) -> None:
-    """Catch one Config Entry unregistering discovery actions still owned by another."""
+    """Catch one Config Entry unregistering probe Actions still owned by another."""
     first = MockConfigEntry(
         domain=DOMAIN,
         title="AUPU Q360 first",
@@ -1055,11 +745,9 @@ async def test_real_services_remain_registered_until_final_entry_unloads(
     assert hasattr(second, "runtime_data")
 
     service_names = (
-        START_DISCOVERY,
-        BEGIN_DISCOVERY_STEP,
-        ADVANCE_DISCOVERY_STEP,
-        FINISH_DISCOVERY,
-        CANCEL_DISCOVERY,
+        START_PROBE,
+        SAMPLE_PROBE,
+        STOP_PROBE,
     )
     assert all(hass.services.has_service(DOMAIN, service) for service in service_names)
 
@@ -1070,11 +758,11 @@ async def test_real_services_remain_registered_until_final_entry_unloads(
     assert all(not hass.services.has_service(DOMAIN, service) for service in service_names)
 
 
-async def test_real_https_only_discovery_fails_without_transport_or_control(
+async def test_real_https_only_probe_fails_without_transport_or_control(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Keep discovery fail-closed when this Config Entry has no subscribed WSS."""
+    """Keep the probe fail-closed when this Config Entry has no subscribed WSS."""
     control_calls: list[bool] = []
 
     async def fake_set_light(self: AupuApiClient, is_on: bool) -> ApiResponse:
@@ -1086,10 +774,8 @@ async def test_real_https_only_discovery_fails_without_transport_or_control(
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="AUPU Q360",
-        unique_id="synthetic-https-discovery-entry",
-        data=_entry_data(
-            token=_jwt(expires_in=7 * 24 * 60 * 60, subject="synthetic-https-discovery")
-        ),
+        unique_id="synthetic-https-probe-entry",
+        data=_entry_data(token=_jwt(expires_in=7 * 24 * 60 * 60, subject="synthetic-https-probe")),
     )
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -1098,16 +784,13 @@ async def test_real_https_only_discovery_fails_without_transport_or_control(
     with pytest.raises(ServiceValidationError) as raised:
         await hass.services.async_call(
             DOMAIN,
-            START_DISCOVERY,
-            {
-                "config_entry_id": entry.entry_id,
-                "all_modes_off_confirmed": True,
-            },
+            START_PROBE,
+            {"config_entry_id": entry.entry_id},
             blocking=True,
             return_response=True,
         )
 
-    assert raised.value.translation_key == "discovery_wss_unavailable"
+    assert raised.value.translation_key == "probe_wss_unavailable"
     assert control_calls == []
     await _unload(hass, entry)
 

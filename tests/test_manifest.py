@@ -44,12 +44,82 @@ def _scalar_strings(value: object) -> list[str]:
     return [value] if isinstance(value, str) else []
 
 
+def test_temporary_probe_public_contract_is_exact(project_root: Path) -> None:
+    """Catch an obsolete Action, persistence option, or probe instruction resurfacing."""
+    strings = _load_json(project_root / "custom_components/aupu_q360/strings.json")
+    translation = _load_json(project_root / "custom_components/aupu_q360/translations/zh-Hans.json")
+    services = _load_yaml(project_root / "custom_components/aupu_q360/services.yaml")
+    diagnostics = (project_root / "custom_components/aupu_q360/diagnostics.py").read_text(
+        encoding="utf-8"
+    )
+    readme = (project_root / "README.md").read_text(encoding="utf-8")
+    runbook = (project_root / "docs/q360-read-only-discovery-runbook.md").read_text(
+        encoding="utf-8"
+    )
+
+    expected_services = {"start_probe", "sample_probe", "stop_probe"}
+    expected_errors = {
+        "probe_busy",
+        "probe_inactive",
+        "probe_wss_unavailable",
+        "probe_snapshot_timeout",
+        "probe_invalid_payload",
+    }
+    assert set(services) == expected_services
+    assert set(strings["services"]) == expected_services
+    assert set(strings["exceptions"]) == expected_errors
+    assert _key_tree(translation) == _key_tree(strings)
+    for service in services.values():
+        assert isinstance(service, dict)
+        fields = service["fields"]
+        assert fields == {
+            "config_entry_id": {
+                "required": True,
+                "selector": {"config_entry": {"integration": DOMAIN}},
+            }
+        }
+    assert "raw_" + "archive_enabled" not in strings["options"]["step"]["init"]["data"]
+    assert "state_" + "discovery" not in diagnostics
+    assert not re.search(r"\b[0-9]{9,}\b", json.dumps(services))
+
+    old_actions = {
+        "start_" + "discovery",
+        "begin_" + "discovery_step",
+        "advance_" + "discovery_step",
+        "finish_" + "discovery",
+        "cancel_" + "discovery",
+    }
+    for document in (readme, runbook):
+        for required in (
+            "start_probe",
+            "sample_probe",
+            "stop_probe",
+            "临时开发工具",
+            "不保存",
+            "约 23 次",
+        ):
+            assert required in document
+        for old_action in old_actions:
+            assert old_action not in document
+        for forbidden_control in (
+            "light.turn_on",
+            "switch.turn_on",
+            "number.set_value",
+            "select.select_option",
+            "set_light",
+            "CONTROL_PATH",
+            "shadow/update",
+        ):
+            assert forbidden_control not in document
+    assert "连续两次" in runbook
+    assert "App 层" in runbook
+
+
 def test_manifest_is_hacs_installable(project_root: Path) -> None:
     """Expose accidental metadata regressions before HACS installs the integration."""
     manifest = _load_json(project_root / "custom_components/aupu_q360/manifest.json")
     hacs = _load_json(project_root / "hacs.json")
-    pyproject_text = (project_root / "pyproject.toml").read_text(encoding="utf-8")
-    pyproject = tomllib.loads(pyproject_text)
+    pyproject = tomllib.loads((project_root / "pyproject.toml").read_text(encoding="utf-8"))
     lock = tomllib.loads((project_root / "uv.lock").read_text(encoding="utf-8"))
     constants = (project_root / "custom_components/aupu_q360/const.py").read_text(encoding="utf-8")
 
@@ -153,254 +223,9 @@ def test_english_and_simplified_chinese_flow_keys_match(project_root: Path) -> N
         "cannot_connect",
     }
     assert set(options["abort"]) == {"invalid_state", "invalid_entry"}
-    assert set(options["step"]["init"]["data"]) == {
-        "token",
-        "phone",
-        "use_wss",
-        "raw_archive_enabled",
-    }
+    assert set(options["step"]["init"]["data"]) == {"token", "phone", "use_wss"}
     assert strings["entity"]["binary_sensor"]["state_channel"]["name"] == "State channel"
     assert translation["entity"]["binary_sensor"]["state_channel"]["name"] == "状态通道"
-
-
-def test_discovery_actions_have_fixed_ui_schemas_and_translations(project_root: Path) -> None:
-    """Catch free-text experiments or a discovery action missing from one locale."""
-    expected_services = {
-        "start_discovery",
-        "begin_discovery_step",
-        "advance_discovery_step",
-        "finish_discovery",
-        "cancel_discovery",
-    }
-    expected_exceptions = {
-        "discovery_wss_unavailable",
-        "discovery_busy",
-        "discovery_snapshot_timeout",
-        "discovery_invalid_transition",
-        "discovery_step_expired",
-        "discovery_session_expired",
-        "discovery_resource_limit",
-        "discovery_report_save_failed",
-        "discovery_raw_archive_unavailable",
-        "discovery_raw_archive_failed",
-        "discovery_raw_archive_limit",
-        "discovery_invalid_parameter",
-        "discovery_restore_required",
-        "discovery_manual_restore_required",
-        "discovery_invalid_payload",
-        "discovery_ready_for_step",
-        "discovery_prompt_mode_on",
-        "discovery_prompt_mode_restore",
-        "discovery_prompt_carrier_on",
-        "discovery_prompt_parameter_change",
-        "discovery_prompt_parameter_restore",
-        "discovery_prompt_carrier_off",
-        "discovery_prompt_idle_observation",
-        "discovery_cycle_recorded",
-        "discovery_report_saved",
-        "discovery_cancelled",
-    }
-    strings = _load_json(project_root / "custom_components/aupu_q360/strings.json")
-    translation = _load_json(project_root / "custom_components/aupu_q360/translations/zh-Hans.json")
-    services = _load_yaml(project_root / "custom_components/aupu_q360/services.yaml")
-
-    assert set(services) == expected_services
-    assert set(strings["services"]) == expected_services
-    assert set(strings["exceptions"]) == expected_exceptions
-    assert _key_tree(translation) == _key_tree(strings)
-
-    english_services = " ".join(_scalar_strings(strings["services"]))
-    english_exceptions = " ".join(_scalar_strings(strings["exceptions"]))
-    chinese_services = " ".join(_scalar_strings(translation["services"]))
-    chinese_exceptions = " ".join(_scalar_strings(translation["exceptions"]))
-
-    assert (
-        "operator control surface (physical panel, official AUPU app, or official WeChat "
-        "mini program)" in english_services
-    )
-    assert "操作者控制面（实体面板、奥普官方 App 或官方微信小程序）" in chinese_services
-    assert "remote sessions must cancel and arrange an on-site inspection" in english_exceptions
-    assert "远程会话必须取消并安排现场检查" in chinese_exceptions
-
-    for obsolete_panel_only_copy in (
-        "on the physical panel",
-        "inspect the physical panel",
-    ):
-        assert obsolete_panel_only_copy not in english_services
-        assert obsolete_panel_only_copy not in english_exceptions
-    for obsolete_panel_only_copy in (
-        "请在实体面板",
-        "检查实体面板",
-    ):
-        assert obsolete_panel_only_copy not in chinese_services
-        assert obsolete_panel_only_copy not in chinese_exceptions
-
-    prompt_keys = {
-        "discovery_prompt_mode_on",
-        "discovery_prompt_mode_restore",
-        "discovery_prompt_carrier_on",
-        "discovery_prompt_parameter_change",
-        "discovery_prompt_parameter_restore",
-        "discovery_prompt_carrier_off",
-        "discovery_prompt_idle_observation",
-    }
-    for key in prompt_keys:
-        assert "operator control surface" in strings["exceptions"][key]["message"]
-        assert "操作者控制面" in translation["exceptions"][key]["message"]
-
-    for name, service in services.items():
-        assert isinstance(service, dict)
-        fields = service["fields"]
-        assert fields["config_entry_id"] == {
-            "required": True,
-            "selector": {"config_entry": {"integration": DOMAIN}},
-        }
-        if name not in {"start_discovery", "begin_discovery_step"}:
-            assert set(fields) == {"config_entry_id"}
-    start_fields = services["start_discovery"]["fields"]
-    assert set(start_fields) == {"config_entry_id", "all_modes_off_confirmed"}
-    assert start_fields["all_modes_off_confirmed"] == {
-        "required": True,
-        "selector": {"boolean": {}},
-    }
-    begin_fields = services["begin_discovery_step"]["fields"]
-    assert set(begin_fields) == {
-        "config_entry_id",
-        "experiment",
-        "round",
-        "source_level",
-        "target_level",
-        "source_temperature",
-        "target_temperature",
-    }
-    assert begin_fields["experiment"]["selector"]["select"]["options"] == [
-        "ai_thermostatic_warmth",
-        "deodorization_sterilization",
-        "ventilation",
-        "air_blowing",
-        "normal_drying",
-        "thermostatic_drying",
-        "night_light",
-        "global_fan_level",
-        "ai_target_temperature",
-        "idle_environment",
-    ]
-    assert begin_fields["round"]["selector"]["select"]["options"] == ["1", "2"]
-    for field in ("source_level", "target_level"):
-        assert begin_fields[field] == {
-            "required": False,
-            "selector": {"number": {"min": 1, "max": 5, "step": 1, "mode": "box"}},
-        }
-    for field in ("source_temperature", "target_temperature"):
-        assert begin_fields[field] == {
-            "required": False,
-            "selector": {"number": {"min": 30, "max": 42, "step": 1, "mode": "box"}},
-        }
-    assert "complete_discovery_step" not in services
-    assert not re.search(r"\b[0-9]{9,}\b", json.dumps(services))
-
-
-def test_v2_discovery_docs_match_the_remote_operator_contract(project_root: Path) -> None:
-    """Catch versioned operator docs regaining v1 actions or unsafe deployment shortcuts."""
-    readme = (project_root / "README.md").read_text(encoding="utf-8")
-    runbook = (project_root / "docs/q360-read-only-discovery-runbook.md").read_text(
-        encoding="utf-8"
-    )
-    services = _load_yaml(project_root / "custom_components/aupu_q360/services.yaml")
-    expected_services = {
-        "start_discovery",
-        "begin_discovery_step",
-        "advance_discovery_step",
-        "finish_discovery",
-        "cancel_discovery",
-    }
-
-    for document in (readme, runbook):
-        for required_remote_copy in (
-            "操作者控制面",
-            "奥普官方 App",
-            "官方微信小程序",
-            "只有目标设备 Shadow `reported`",
-            "start 会先续建 WSS，并在确认新连接 healthy 后才建立发现基线",
-            "每个等待操作者的阶段最多 900 秒",
-            "完整发现会话最多 3,300 秒",
-            "旧 v2 报告中的 120/3,600 和 300/3,300 超时 profile 只用于读取兼容",
-        ):
-            assert required_remote_copy in document
-        assert "120 秒阶段期限" not in document
-        assert "整个发现会话：3,600 秒" not in document
-
-    assert "操作者位于实体面板旁" not in runbook
-    assert "操作者在实体面板上完成" not in runbook
-
-    compact_runbook = re.sub(r"\s+", "", runbook)
-    for required_remote_boundary in (
-        "连续 45–60 分钟",
-        "浴室无人、无宠物",
-        "可能控制 Q360 的自动化已暂停",
-        "手机、电脑 HA 和聊天在线",
-        "官方控制面显示只用于核对人工操作，不能作为字段证据",
-        "discovery_restore_required",
-        "远程会话不得利用同阶段重试能力",
-        "无论官方控制面显示什么",
-        "家中人员现场确认",
-        "当前载体仍开启时，先恢复原档位或原温度，再关闭全部模式",
-        "恢复需要重新开启模式时，不再远程尝试，由现场人员接管",
-        "重新取得真实设备实验授权",
-    ):
-        assert re.sub(r"\s+", "", required_remote_boundary) in compact_runbook
-
-    assert "在官方控制面关闭七个模式，恢复原始全局档位" not in runbook
-
-    assert set(services) == expected_services
-    for document in (readme, runbook):
-        assert "advance_discovery_step" in document
-        assert "complete_discovery_step" not in document
-        assert "Home Assistant 不会" in document
-        for forbidden_control in (
-            "light.turn_on",
-            "switch.turn_on",
-            "number.set_value",
-            "select.select_option",
-            "set_light",
-            "CONTROL_PATH",
-            "shadow/update",
-        ):
-            assert forbidden_control not in document
-
-    for experiment in (
-        "ai_thermostatic_warmth",
-        "deodorization_sterilization",
-        "ventilation",
-        "air_blowing",
-        "normal_drying",
-        "thermostatic_drying",
-        "night_light",
-        "global_fan_level",
-        "ai_target_temperature",
-        "idle_environment",
-    ):
-        assert experiment in readme
-
-    compact_runbook = re.sub(r"\s+", "", runbook)
-    for required_boundary in (
-        "/home/george/.local/state/ha-aupu-q360/raw-discovery/",
-        "/var/lib/aupu-q360-private-discovery/",
-        "0700",
-        "0600",
-        "64 MiB",
-        "schema 2",
-        "恢复原始全局档位",
-        "恢复原始 AI 目标温度",
-        "创建宿主机私有目录",
-        "修改 Compose",
-        "同步组件",
-        "重建或重启 Home Assistant 容器",
-        "执行真实远程会话",
-        "Base64 只是编码，不是脱敏",
-        "删除 Config Entry 不会删除宿主机档案",
-    ):
-        assert re.sub(r"\s+", "", required_boundary) in compact_runbook
 
 
 def test_readme_documents_safe_offline_install_and_operations(project_root: Path) -> None:

@@ -12,15 +12,10 @@ from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import AupuApiClient
-from .const import INTEGRATION_VERSION
 from .coordinator import AupuCoordinator
-from .discovery import PanelStateDiscoverySession
-from .discovery_report_schema import validate_discovery_report
-from .discovery_sanitizer import DiscoverySanitizer
-from .discovery_store import DiscoveryReportStore
 from .models import AupuConfigEntryData, AupuRuntimeData
-from .raw_discovery_archive import RawDiscoveryArchive
-from .services import async_register_discovery_entry, async_unregister_discovery_entry
+from .probe import PanelStateProbe
+from .services import async_register_probe_entry, async_unregister_probe_entry
 from .shadow import AcceptedShadow
 from .signer import AppAuthorizationSigner
 
@@ -91,7 +86,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry[AupuRuntimeD
             credential=credential,
             device=device,
         ),
-        raw_archive_enabled=config.raw_archive_enabled,
     )
     coordinator = AupuCoordinator(
         hass=hass,
@@ -105,17 +99,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry[AupuRuntimeD
         user_uuid=config.user_uuid,
     )
     entry.runtime_data.coordinator = coordinator
-    forbidden_values = (device.did, device.tag, entry.entry_id)
-
-    def validate_report(report: object) -> object:
-        return validate_discovery_report(report, forbidden_values=forbidden_values)
-
-    discovery_store = DiscoveryReportStore(
-        hass,
-        entry.entry_id,
-        validate_report,
-    )
-    entry.runtime_data.discovery_store = discovery_store
     observer_remover: Callable[[], None] | None = None
 
     def activate_observer(
@@ -124,7 +107,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry[AupuRuntimeD
     ) -> None:
         nonlocal observer_remover
         if observer_remover is not None:
-            raise RuntimeError("discovery observer already active")
+            raise RuntimeError("probe observer already active")
         observer_remover = coordinator.async_set_discovery_observer(observer, cancel)
 
     def deactivate_observer() -> None:
@@ -134,46 +117,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry[AupuRuntimeD
         if remove is not None:
             remove()
 
-    async def archive_factory(
-        on_failure: Callable[[str], None],
-    ) -> RawDiscoveryArchive:
-        return await RawDiscoveryArchive.async_open(on_failure)
-
-    discovery_session = PanelStateDiscoverySession(
+    probe = PanelStateProbe(
+        device_id=device.did,
         prepare_transport=coordinator.async_prepare_discovery_transport,
         request_shadow_get=coordinator.async_request_shadow_get,
-        save_report=discovery_store.async_save,
-        sanitizer_factory=lambda key: DiscoverySanitizer(
-            session_key=key,
-            device_id=device.did,
-        ),
-        validate_report=validate_report,
         activate_observer=activate_observer,
         deactivate_observer=deactivate_observer,
-        discovery_available=lambda: coordinator.discovery_available,
-        integration_version=INTEGRATION_VERSION,
-        archive_factory=archive_factory if config.raw_archive_enabled else None,
+        probe_available=lambda: coordinator.discovery_available,
     )
-    entry.runtime_data.discovery_session = discovery_session
-    entry.runtime_data.stoppers.extend((discovery_session, coordinator))
+    entry.runtime_data.probe = probe
+    entry.runtime_data.stoppers.extend((probe, coordinator))
     services_registered = False
     try:
         await coordinator.async_start()
-        async_register_discovery_entry(hass, entry.entry_id)
+        async_register_probe_entry(hass, entry.entry_id)
         services_registered = True
         await hass.config_entries.async_forward_entry_setups(entry, _PLATFORMS)
     except BaseException:
         if services_registered:
-            async_unregister_discovery_entry(hass, entry.entry_id)
+            async_unregister_probe_entry(hass, entry.entry_id)
         await _async_teardown_runtime(entry)
         raise
 
     @callback
-    def cancel_discovery_on_stop(_: Event) -> None:
-        discovery_session.cancel_from_transport("discovery_wss_unavailable")
+    def cancel_probe_on_stop(_: Event) -> None:
+        probe.cancel_from_transport()
 
     entry.async_on_unload(
-        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, cancel_discovery_on_stop)
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, cancel_probe_on_stop)
     )
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
     return True
@@ -183,14 +154,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry[AupuRuntime
     """Unload entities, then stop and release runtime-owned background work."""
     if not await hass.config_entries.async_unload_platforms(entry, _PLATFORMS):
         return False
-    async_unregister_discovery_entry(hass, entry.entry_id)
+    async_unregister_probe_entry(hass, entry.entry_id)
     await _async_teardown_runtime(entry)
     return True
-
-
-async def async_remove_entry(
-    hass: HomeAssistant,
-    entry: ConfigEntry[AupuRuntimeData],
-) -> None:
-    """Remove only this Config Entry's private discovery report."""
-    await DiscoveryReportStore.async_remove_for_entry(hass, entry.entry_id)
