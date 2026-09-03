@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-from homeassistant.components.binary_sensor import BinarySensorDeviceClass
+from homeassistant.components.binary_sensor import BinarySensorDeviceClass, BinarySensorEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 
@@ -22,8 +22,11 @@ from custom_components.aupu_q360.binary_sensor import async_setup_entry as async
 from custom_components.aupu_q360.const import DOMAIN
 from custom_components.aupu_q360.coordinator import AupuCoordinator
 from custom_components.aupu_q360.light import AupuLight
+from custom_components.aupu_q360.models import DeviceConfig
+from custom_components.aupu_q360.shadow import AcceptedShadow
 
 _TEST_LOOP = asyncio.new_event_loop()
+DEVICE = DeviceConfig(did="123", tag="synthetic")
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -56,7 +59,27 @@ def _coordinator() -> AupuCoordinator:
         credential=credential,
         api=cast(AupuApiClient, FakeApi()),
         async_request_reauth=lambda: None,
+        device=DEVICE,
     )
+
+
+def _confirmed_coordinator() -> AupuCoordinator:
+    coordinator = _coordinator()
+    coordinator.async_apply_wss_connection(connected=True, healthy=False)
+    coordinator.async_apply_shadow_message(
+        AcceptedShadow(
+            topic_kind="get",
+            state={
+                "reported": {
+                    DEVICE.did: {
+                        "3": {"properties": {"2": 7, "3": 36}},
+                        "6": {"properties": {"4": False, "5": 5}},
+                    }
+                }
+            },
+        )
+    )
+    return coordinator
 
 
 class RecordingStateChannel(AupuStateChannelBinarySensor):
@@ -106,7 +129,7 @@ def test_wss_setup_exposes_connectivity_state_and_https_only_adds_nothing(
 
     _run(async_setup_binary_sensor(cast(HomeAssistant, object()), wss_entry, add_wss_entities))
 
-    assert len(wss_entities) == 1
+    assert len(wss_entities) == 2
     entity = wss_entities[0]
     assert entity.unique_id == "synthetic-unique-id_state_channel"
     assert entity.device_class is BinarySensorDeviceClass.CONNECTIVITY
@@ -150,7 +173,7 @@ def test_https_only_setup_removes_prior_state_channel_registry_entry(
     class FakeRegistry:
         def async_get_entity_id(self, domain: str, platform: str, unique_id: str) -> str:
             lookups.append((domain, platform, unique_id))
-            return "binary_sensor.aupu_q360_state_channel"
+            return f"binary_sensor.{unique_id}"
 
         def async_remove(self, entity_id: str) -> None:
             registry_removed.append(entity_id)
@@ -174,9 +197,40 @@ def test_https_only_setup_removes_prior_state_channel_registry_entry(
     )
 
     assert entities == []
-    assert lookups == [("binary_sensor", DOMAIN, "synthetic-unique-id_state_channel")]
-    assert registry_removed == ["binary_sensor.aupu_q360_state_channel"]
-    assert state_removed == ["binary_sensor.aupu_q360_state_channel"]
+    assert lookups == [
+        ("binary_sensor", DOMAIN, "synthetic-unique-id_state_channel"),
+        ("binary_sensor", DOMAIN, "synthetic-unique-id_night_light"),
+    ]
+    assert registry_removed == [
+        "binary_sensor.synthetic-unique-id_state_channel",
+        "binary_sensor.synthetic-unique-id_night_light",
+    ]
+    assert state_removed == registry_removed
+
+
+def test_wss_setup_adds_connectivity_and_night_light() -> None:
+    """Catch night-light omission, wrong projection, or stale availability."""
+    coordinator = _confirmed_coordinator()
+    entry = SimpleNamespace(
+        entry_id="synthetic-entry",
+        unique_id="synthetic-unique-id",
+        runtime_data=SimpleNamespace(use_wss=True, coordinator=coordinator),
+    )
+    entities: list[BinarySensorEntity] = []
+
+    _run(async_setup_binary_sensor(cast(HomeAssistant, object()), entry, entities.extend))
+
+    assert [entity.unique_id for entity in entities] == [
+        "synthetic-unique-id_state_channel",
+        "synthetic-unique-id_night_light",
+    ]
+    night_light = entities[1]
+    assert night_light.translation_key == "night_light"
+    assert night_light.device_class is None
+    assert night_light.is_on is False
+    assert night_light.available is True
+    coordinator.async_apply_wss_connection(connected=False, healthy=False)
+    assert night_light.available is False
 
 
 def test_state_channel_listener_is_removed_once_and_stops_writes() -> None:

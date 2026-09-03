@@ -1167,7 +1167,11 @@ def test_failed_expired_setup_options_recovery_reloads_and_clears_repairs_once(
     assert hass.config_entries.reload_calls == 1
     assert entry.runtime_data is not None
     assert entry.runtime_data.credential.authorization_header == f"Bearer {replacement}"
-    assert hass.config_entries.forwarded == (Platform.LIGHT, Platform.BINARY_SENSOR)
+    assert hass.config_entries.forwarded == (
+        Platform.LIGHT,
+        Platform.BINARY_SENSOR,
+        Platform.SENSOR,
+    )
     assert active_issues == {}
     assert len(entry.update_listeners) == 1
 
@@ -1198,7 +1202,11 @@ def test_setup_builds_runtime_and_forwards_light_without_network(
         entry.runtime_data.probe,
         entry.runtime_data.coordinator,
     ]
-    assert hass.config_entries.forwarded == (Platform.LIGHT, Platform.BINARY_SENSOR)
+    assert hass.config_entries.forwarded == (
+        Platform.LIGHT,
+        Platform.BINARY_SENSOR,
+        Platform.SENSOR,
+    )
     assert len(hass.services.handlers) == 3
 
 
@@ -1584,7 +1592,11 @@ def test_successful_unload_stops_runtime_and_clears_reference(
 
     assert result is True
     assert stopper.calls == 1
-    assert hass.config_entries.unloaded == (Platform.LIGHT, Platform.BINARY_SENSOR)
+    assert hass.config_entries.unloaded == (
+        Platform.LIGHT,
+        Platform.BINARY_SENSOR,
+        Platform.SENSOR,
+    )
     assert "runtime_data" not in entry.__dict__
     _run(entry.async_process_on_unload())
     assert entry.update_listeners == []

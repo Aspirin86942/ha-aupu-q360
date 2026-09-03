@@ -96,6 +96,30 @@
     "binary_sensor": {
       "state_channel": {
         "name": "状态通道"
+      },
+      "night_light": {
+        "name": "小夜灯"
+      }
+    },
+    "sensor": {
+      "current_mode": {
+        "name": "当前运行模式",
+        "state": {
+          "off": "关闭",
+          "ai_thermostatic_warmth": "AI 恒温暖",
+          "deodorization_sterilization": "除臭除菌",
+          "ventilation": "换气",
+          "air_blowing": "吹风",
+          "normal_drying": "普通干燥",
+          "thermostatic_drying": "恒温干燥",
+          "unknown": "未知"
+        }
+      },
+      "fan_level": {
+        "name": "风量档位"
+      },
+      "ai_target_temperature": {
+        "name": "AI 目标温度"
       }
     }
   },

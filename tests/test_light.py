@@ -22,7 +22,10 @@ from homeassistant.helpers.issue_registry import IssueSeverity
 from custom_components.aupu_q360 import async_setup_entry, async_unload_entry
 from custom_components.aupu_q360.api import AupuApiClient
 from custom_components.aupu_q360.auth import BearerCredential
-from custom_components.aupu_q360.binary_sensor import AupuStateChannelBinarySensor
+from custom_components.aupu_q360.binary_sensor import (
+    AupuNightLightBinarySensor,
+    AupuStateChannelBinarySensor,
+)
 from custom_components.aupu_q360.binary_sensor import async_setup_entry as async_setup_binary_sensor
 from custom_components.aupu_q360.const import DOMAIN
 from custom_components.aupu_q360.coordinator import AupuCoordinator, StateClock
@@ -795,7 +798,7 @@ def _persisted_data(
     return result
 
 
-def test_setup_starts_one_coordinator_stopper_and_registers_dual_platforms(
+def test_setup_starts_one_coordinator_stopper_and_registers_platforms(
     monkeypatch: pytest.MonkeyPatch,
     issues: IssueRecorder,
 ) -> None:
@@ -835,7 +838,11 @@ def test_setup_starts_one_coordinator_stopper_and_registers_dual_platforms(
     assert entry.runtime_data is not None
     coordinator = entry.runtime_data.coordinator
     assert entry.runtime_data.stoppers == [entry.runtime_data.probe, coordinator]
-    assert config_entries.forwarded == (Platform.LIGHT, Platform.BINARY_SENSOR)
+    assert config_entries.forwarded == (
+        Platform.LIGHT,
+        Platform.BINARY_SENSOR,
+        Platform.SENSOR,
+    )
     assert len(config_entries.entities) == 1
     entity = config_entries.entities[0]
     assert entity.name == "Q360T5-Pro Light"
@@ -859,7 +866,11 @@ def test_setup_starts_one_coordinator_stopper_and_registers_dual_platforms(
         )
         is True
     )
-    assert config_entries.unloaded == (Platform.LIGHT, Platform.BINARY_SENSOR)
+    assert config_entries.unloaded == (
+        Platform.LIGHT,
+        Platform.BINARY_SENSOR,
+        Platform.SENSOR,
+    )
     assert stop_calls == 1
     assert hass.services.handlers == {}
     assert "runtime_data" not in entry.__dict__
@@ -1003,11 +1014,13 @@ def test_missing_wss_user_uuid_requests_reauth_without_failing_setup(
     assert len(starts) == 1
     assert starts[0].is_running is False
     assert entry.reauth_calls == 1
-    assert len(config_entries.entities) == 2
-    light, state_channel = config_entries.entities
+    assert len(config_entries.entities) == 3
+    light, state_channel, night_light = config_entries.entities
     assert isinstance(light, AupuLight)
     assert isinstance(state_channel, AupuStateChannelBinarySensor)
+    assert isinstance(night_light, AupuNightLightBinarySensor)
     assert state_channel.device_info == light.device_info
+    assert night_light.device_info == light.device_info
     assert light.is_on is None
     assert light.assumed_state is True
 

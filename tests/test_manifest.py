@@ -252,8 +252,37 @@ def test_english_and_simplified_chinese_flow_keys_match(project_root: Path) -> N
     }
     assert set(options["abort"]) == {"invalid_state", "invalid_entry"}
     assert set(options["step"]["init"]["data"]) == {"token", "phone", "use_wss"}
-    assert strings["entity"]["binary_sensor"]["state_channel"]["name"] == "State channel"
-    assert translation["entity"]["binary_sensor"]["state_channel"]["name"] == "状态通道"
+    english_entities = strings["entity"]
+    chinese_entities = translation["entity"]
+    assert set(english_entities) == {"binary_sensor", "sensor"}
+    assert set(english_entities["binary_sensor"]) == {"state_channel", "night_light"}
+    assert set(english_entities["sensor"]) == {
+        "current_mode",
+        "fan_level",
+        "ai_target_temperature",
+    }
+    expected_mode_states = {
+        "off",
+        "ai_thermostatic_warmth",
+        "deodorization_sterilization",
+        "ventilation",
+        "air_blowing",
+        "normal_drying",
+        "thermostatic_drying",
+        "unknown",
+    }
+    assert set(english_entities["sensor"]["current_mode"]["state"]) == expected_mode_states
+    assert english_entities["binary_sensor"]["state_channel"]["name"] == "State channel"
+    assert english_entities["binary_sensor"]["night_light"]["name"] == "Night light"
+    assert english_entities["sensor"]["current_mode"]["name"] == "Current mode"
+    assert english_entities["sensor"]["fan_level"]["name"] == "Fan level"
+    assert english_entities["sensor"]["ai_target_temperature"]["name"] == "AI target temperature"
+    assert chinese_entities["binary_sensor"]["state_channel"]["name"] == "状态通道"
+    assert chinese_entities["binary_sensor"]["night_light"]["name"] == "小夜灯"
+    assert chinese_entities["sensor"]["current_mode"]["name"] == "当前运行模式"
+    assert set(chinese_entities["sensor"]["current_mode"]["state"]) == expected_mode_states
+    assert chinese_entities["sensor"]["fan_level"]["name"] == "风量档位"
+    assert chinese_entities["sensor"]["ai_target_temperature"]["name"] == "AI 目标温度"
 
 
 def test_readme_documents_safe_offline_install_and_operations(project_root: Path) -> None:

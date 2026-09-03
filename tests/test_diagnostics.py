@@ -30,6 +30,11 @@ _DIAGNOSTIC_KEYS = {
     "last_error_code",
     "light_state_source",
     "assumed_state",
+    "panel_mode",
+    "night_light",
+    "fan_level",
+    "ai_target_temperature",
+    "panel_state_available",
 }
 
 
@@ -91,6 +96,11 @@ def test_diagnostics_build_only_the_allowed_scalar_whitelist(
         last_error_code="protocol_error",
         light_state_source="reported",
         assumed_state=False,
+        panel_mode="ventilation",
+        night_light_is_on=False,
+        fan_level=5,
+        ai_target_temperature=36,
+        panel_state_available=True,
         forbidden=forbidden,
     )
     runtime = SimpleNamespace(
@@ -123,6 +133,11 @@ def test_diagnostics_build_only_the_allowed_scalar_whitelist(
         "last_error_code": "protocol_error",
         "light_state_source": "reported",
         "assumed_state": False,
+        "panel_mode": "ventilation",
+        "night_light": False,
+        "fan_level": 5,
+        "ai_target_temperature": 36,
+        "panel_state_available": True,
     }
     serialized = json.dumps(result, sort_keys=True)
     assert set(result) == _DIAGNOSTIC_KEYS
@@ -157,6 +172,11 @@ def test_unloaded_and_incomplete_runtime_keep_the_same_whitelist(
         "last_error_code": "none",
         "light_state_source": "unknown",
         "assumed_state": False,
+        "panel_mode": "unavailable",
+        "night_light": None,
+        "fan_level": None,
+        "ai_target_temperature": None,
+        "panel_state_available": False,
     }
     assert results == [expected, expected]
     assert all(secret not in json.dumps(result) for result in results)
@@ -207,6 +227,11 @@ def test_diagnostics_fold_secret_bearing_attribute_and_time_errors_to_defaults(
         "last_error_code": "none",
         "light_state_source": "unknown",
         "assumed_state": False,
+        "panel_mode": "unavailable",
+        "night_light": None,
+        "fan_level": None,
+        "ai_target_temperature": None,
+        "panel_state_available": False,
     }
     assert results == [expected, expected]
     assert all(secret not in json.dumps(result) for result in results)
@@ -229,6 +254,33 @@ def test_incomplete_runtime_does_not_compute_credential_expiry(
 
     assert result["authentication_expiry_bucket"] == "unknown"
     assert set(result) == _DIAGNOSTIC_KEYS
+
+
+def test_panel_diagnostics_fail_closed_without_serializing_invalid_values() -> None:
+    """Catch invalid or secret-bearing panel runtime values entering diagnostics."""
+    sentinel = "private-panel-sentinel"
+    coordinator = SimpleNamespace(
+        panel_mode=sentinel,
+        night_light_is_on=sentinel,
+        fan_level=sentinel,
+        ai_target_temperature=sentinel,
+        panel_state_available=sentinel,
+    )
+    runtime = SimpleNamespace(
+        credential=_credential(_NOW + timedelta(days=8)),
+        use_wss=True,
+        coordinator=coordinator,
+    )
+    entry = SimpleNamespace(runtime_data=runtime)
+
+    result = _run(async_get_config_entry_diagnostics(None, cast(Any, entry)))
+
+    assert result["panel_mode"] == "unavailable"
+    assert result["night_light"] is None
+    assert result["fan_level"] is None
+    assert result["ai_target_temperature"] is None
+    assert result["panel_state_available"] is False
+    assert sentinel not in json.dumps(result)
 
 
 def test_diagnostics_ignore_unreachable_legacy_store() -> None:

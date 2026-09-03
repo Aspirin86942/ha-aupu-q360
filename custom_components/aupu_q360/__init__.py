@@ -19,7 +19,7 @@ from .services import async_register_probe_entry, async_unregister_probe_entry
 from .shadow import AcceptedShadow
 from .signer import AppAuthorizationSigner
 
-_PLATFORMS = (Platform.LIGHT, Platform.BINARY_SENSOR)
+_PLATFORMS = (Platform.LIGHT, Platform.BINARY_SENSOR, Platform.SENSOR)
 _LOGGER = logging.getLogger(__name__)
 
 

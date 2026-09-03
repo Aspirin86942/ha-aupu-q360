@@ -96,6 +96,30 @@
     "binary_sensor": {
       "state_channel": {
         "name": "State channel"
+      },
+      "night_light": {
+        "name": "Night light"
+      }
+    },
+    "sensor": {
+      "current_mode": {
+        "name": "Current mode",
+        "state": {
+          "off": "Off",
+          "ai_thermostatic_warmth": "AI thermostatic warmth",
+          "deodorization_sterilization": "Deodorization and sterilization",
+          "ventilation": "Ventilation",
+          "air_blowing": "Air blowing",
+          "normal_drying": "Normal drying",
+          "thermostatic_drying": "Thermostatic drying",
+          "unknown": "Unknown"
+        }
+      },
+      "fan_level": {
+        "name": "Fan level"
+      },
+      "ai_target_temperature": {
+        "name": "AI target temperature"
       }
     }
   },

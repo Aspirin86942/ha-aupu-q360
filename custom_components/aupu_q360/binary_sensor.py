@@ -1,4 +1,4 @@
-"""State-channel connectivity entity for the optional AUPU Q360 WSS transport."""
+"""Read-only binary sensors for the optional AUPU Q360 WSS transport."""
 
 from __future__ import annotations
 
@@ -14,7 +14,10 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .const import DOMAIN
 from .coordinator import AupuCoordinator
+from .entity import AupuPanelEntity
 from .models import AupuRuntimeData
+
+_SUFFIXES = ("state_channel", "night_light")
 
 
 async def async_setup_entry(
@@ -22,24 +25,46 @@ async def async_setup_entry(
     entry: ConfigEntry[AupuRuntimeData],
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Add the state-channel sensor only when the entry uses WSS."""
-    unique_id = f"{entry.unique_id or entry.entry_id}_state_channel"
+    """Add connectivity and night-light sensors only when the entry uses WSS."""
+    base = entry.unique_id or entry.entry_id
     if not entry.runtime_data.use_wss:
         registry = er.async_get(hass)
-        entity_id = registry.async_get_entity_id(BINARY_SENSOR_DOMAIN, DOMAIN, unique_id)
-        if entity_id is not None:
-            registry.async_remove(entity_id)
-            hass.states.async_remove(entity_id)
+        for suffix in _SUFFIXES:
+            entity_id = registry.async_get_entity_id(
+                BINARY_SENSOR_DOMAIN, DOMAIN, f"{base}_{suffix}"
+            )
+            if entity_id is not None:
+                registry.async_remove(entity_id)
+                hass.states.async_remove(entity_id)
         return
     async_add_entities(
         [
             AupuStateChannelBinarySensor(
                 coordinator=entry.runtime_data.coordinator,
                 entry_id=entry.entry_id,
-                unique_id=unique_id,
-            )
+                unique_id=f"{base}_state_channel",
+            ),
+            AupuNightLightBinarySensor(
+                coordinator=entry.runtime_data.coordinator,
+                entry_id=entry.entry_id,
+                unique_id=f"{base}_night_light",
+            ),
         ]
     )
+
+
+class AupuNightLightBinarySensor(AupuPanelEntity, BinarySensorEntity):
+    """Expose the reported night-light flag without a control surface."""
+
+    _attr_translation_key = "night_light"
+
+    @property
+    def is_on(self) -> bool | None:
+        return self._coordinator.night_light_is_on
+
+    @property
+    def available(self) -> bool:
+        return self._coordinator.night_light_available
 
 
 class AupuStateChannelBinarySensor(BinarySensorEntity):
