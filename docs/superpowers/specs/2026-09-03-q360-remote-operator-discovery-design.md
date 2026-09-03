@@ -3,8 +3,8 @@
 ## 文档状态
 
 - 日期：2026-09-03。
-- 状态：远程操作设计已确认；传输窗口与时限按后续规格修订，等待 `0.2.2` 本地验证。
-- 适用版本：当前修订计划发布为 `0.2.2`。
+- 状态：远程操作设计已确认；传输窗口、时限与背景恢复门按后续修复修订。
+- 适用版本：当前修订发布为 `0.2.3`。
 - 与现有规格的关系：本规格是
   [Q360 面板状态发现 v2 设计](./2026-09-03-q360-panel-state-discovery-v2-design.md)
   的操作安全补充。它只取代其中“操作者必须位于实体面板旁”的真实实验要求；v2 的协议、
@@ -199,7 +199,7 @@ HA 已失联时无法调用 `cancel_discovery`，但这不影响人工安全恢�
 - 更新 `custom_components/aupu_q360/strings.json`；
 - 更新 `custom_components/aupu_q360/translations/zh-Hans.json`；
 - 将 `pyproject.toml`、`uv.lock`、`custom_components/aupu_q360/manifest.json`、
-  `custom_components/aupu_q360/const.py` 和版本测试同步到 `0.2.2`；
+  `custom_components/aupu_q360/const.py` 和版本测试同步到 `0.2.3`；
 - 更新聚焦的文档、翻译、Action schema 和网络边界测试。
 
 `custom_components/aupu_q360/services.yaml` 的 Action 结构无需修改。discovery 状态机、目录、分析、
@@ -212,7 +212,7 @@ Action 结构、实验目录、存储、诊断和原始档案边界不变；WSS 
 1. 先让契约测试要求 README、运行手册和翻译包含官方远程控制面、`reported` 唯一证据及异常现场
    兜底规则，并拒绝旧的“操作者必须在实体面板旁”正常流程。
 2. 保持五个 Actions、字段矩阵、固定 message codes 和中英文 key tree 完全一致。
-3. 将四处版本来源、lock file 和版本断言统一为 `0.2.2`。
+3. 将四处版本来源、lock file 和版本断言统一为 `0.2.3`。
 4. 保持网络边界测试，证明 discovery 只依赖 `async_request_shadow_get`，没有控制 API、Shadow
    `update`/`desired` 或官方控制面接口。
 5. 运行完整 pytest、HA runtime 测试、Ruff、格式检查、mypy、私有签名检查、敏感信息扫描和
@@ -225,7 +225,7 @@ Action 结构、实验目录、存储、诊断和原始档案边界不变；WSS 
 以下步骤继续相互独立，前一步完成不自动授权后一步：
 
 1. 审查并提交规格与本地实现；
-2. 推送 `0.2.2`；
+2. 推送 `0.2.3`；
 3. 将已验证组件同步到实际 HA `/config/custom_components`；
 4. 重启实际 Home Assistant，使新版本和提示生效；本变更不需要修改 Compose 或重建容器；
 5. 做无 discovery 烟测，确认 HA 版本、Config Entry、照明、connectivity、WSS 和错误日志；
@@ -240,7 +240,7 @@ Action 结构、实验目录、存储、诊断和原始档案边界不变；WSS 
 3. 远程预检覆盖环境、在线链路、自动化隔离、原始值记录和全部模式关闭。
 4. 异常、超时、断线、恢复不确定或控制面状态不一致时停止会话，并强制现场最终确认。
 5. Action 参数、状态机、实验目录、Store key、报告 schema、档案边界和网络只读性没有变化。
-6. 版本为 `0.2.2`，所有本地与 HA runtime 验证通过。
+6. 版本为 `0.2.3`，所有本地与 HA runtime 验证通过。
 7. 重新部署后的无 discovery 烟测通过，且没有提前启用档案、创建会话或操作真实设备。
 
 真实远程会话只有在新的独立授权下才能开始。实验完成仍只产生字段候选；任何正式实体或控制

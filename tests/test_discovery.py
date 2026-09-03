@@ -46,6 +46,21 @@ def _state(value: object, *, path: str = "1") -> dict[str, object]:
     return {"reported": {_DEVICE_ID: {"2": {"properties": {path: value}}}}}
 
 
+def _state_with_background(mode: bool, background: int) -> dict[str, object]:
+    return {
+        "reported": {
+            _DEVICE_ID: {
+                "2": {
+                    "properties": {
+                        "1": mode,
+                        "2": background,
+                    }
+                }
+            }
+        }
+    }
+
+
 class FakeArchive:
     """Record exact archive ordering while leaving filesystem behavior to Task 3 tests."""
 
@@ -403,6 +418,40 @@ async def test_mode_cycle_advances_only_on_correlated_gets_and_finishes_cleanly(
     assert harness.activations == harness.deactivations == 1
     assert harness.observer is None
     assert _DEVICE_ID not in repr(report)
+
+
+@pytest.mark.asyncio
+async def test_idle_background_change_does_not_leave_manual_restore_pending() -> None:
+    """Catch ignored background drift remaining in the session restoration gate."""
+    harness = DiscoveryHarness()
+    await _start_ready(harness, _state_with_background(False, 0))
+
+    await _begin(
+        harness,
+        build_step_request(experiment="idle_environment", round_number=1),
+        _state_with_background(False, 0),
+    )
+    await _advance(harness, _state_with_background(False, 1))
+    await _begin(
+        harness,
+        build_step_request(experiment="idle_environment", round_number=2),
+        _state_with_background(False, 1),
+    )
+    await _advance(harness, _state_with_background(False, 2))
+
+    await _begin(
+        harness,
+        build_step_request(experiment="night_light", round_number=1),
+        _state_with_background(False, 2),
+    )
+    await _advance(harness, _state_with_background(True, 3))
+    restored = await _advance(harness, _state_with_background(False, 4))
+
+    assert restored.state is DiscoveryState.READY
+    assert restored.message_code == "discovery_cycle_recorded"
+    assert restored.completed_cycle_count == 3
+    assert restored.manual_restore_required is False
+    await harness.session.async_finish()
 
 
 @pytest.mark.asyncio

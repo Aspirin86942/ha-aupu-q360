@@ -661,7 +661,9 @@ class PanelStateDiscoverySession:
             self._pending_restore_paths.difference_update(result.restored_paths)
             restoration_required = result.required
         elif phase in _POSITIVE_PHASES:
-            self._pending_restore_paths.update(_restorable_paths(changes))
+            self._pending_restore_paths.update(
+                _restorable_paths(changes) - background_paths(self._completed_cycles)
+            )
 
         return (
             PhaseEvidence(
