@@ -21,7 +21,6 @@ from .models import DeviceConfig
 from .shadow import (
     AcceptedShadow,
     LightShadowUpdate,
-    RawShadowEvent,
     parse_accepted_shadow,
     parse_light_shadow_update,
 )
@@ -29,9 +28,8 @@ from .wss import AupuShadowWebSocket
 
 LightStateSource = Literal["unknown", "command", "reported", "desired", "get_reported"]
 StateClock = Callable[[], datetime]
-DiscoveryObserver = Callable[[AcceptedShadow], None]
-DiscoveryCancel = Callable[[], None]
-OutgoingDiscoveryRecorder = Callable[[RawShadowEvent], None]
+ProbeObserver = Callable[[AcceptedShadow], None]
+ProbeCancel = Callable[[], None]
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -76,8 +74,8 @@ class AupuCoordinator:
         self._last_confirmed_at: datetime | None = None
         self._wss: AupuShadowWebSocket | None = None
         self._device = device
-        self._discovery_observer: DiscoveryObserver | None = None
-        self._discovery_cancel: DiscoveryCancel | None = None
+        self._probe_observer: ProbeObserver | None = None
+        self._probe_cancel: ProbeCancel | None = None
         if use_wss:
             if session is None or device is None:
                 raise ValueError("WSS runtime dependencies are required")
@@ -117,8 +115,8 @@ class AupuCoordinator:
         return self._wss_healthy
 
     @property
-    def discovery_available(self) -> bool:
-        """Return whether a read-only discovery snapshot can be sent now."""
+    def probe_available(self) -> bool:
+        """Return whether a read-only probe snapshot can be sent now."""
         return (
             not self._stopped
             and not self._reauth_requested
@@ -171,24 +169,20 @@ class AupuCoordinator:
             self._wss_healthy = False
             self._state_stale = True
             self._listeners.clear()
-            self._discovery_observer = None
-            self._discovery_cancel = None
+            self._probe_observer = None
+            self._probe_cancel = None
 
-    async def async_request_shadow_get(
-        self,
-        client_token: str,
-        record_outgoing: OutgoingDiscoveryRecorder | None = None,
-    ) -> None:
+    async def async_request_shadow_get(self, client_token: str) -> None:
         """Send one read-only snapshot request through the existing WSS."""
-        if not self.discovery_available or self._wss is None:
+        if not self.probe_available or self._wss is None:
             raise HomeAssistantError("discovery_wss_unavailable")
         try:
-            await self._wss.async_request_shadow_get(client_token, record_outgoing)
+            await self._wss.async_request_shadow_get(client_token)
         except (AupuError, aiohttp.ClientError, RuntimeError, TimeoutError):
             raise HomeAssistantError("discovery_wss_unavailable") from None
 
-    async def async_prepare_discovery_transport(self) -> None:
-        """Renew WSS and require one healthy connection before discovery starts."""
+    async def async_prepare_probe_transport(self) -> None:
+        """Renew WSS and require one healthy connection before the probe starts."""
         wss = self._wss
         if self._stopped or self._reauth_requested or wss is None or self._wss_missing_user_uuid:
             raise HomeAssistantError("discovery_wss_unavailable")
@@ -266,37 +260,37 @@ class AupuCoordinator:
 
     @callback
     def async_apply_shadow_message(self, message: AcceptedShadow) -> None:
-        """Apply formal light state before isolating optional discovery work."""
+        """Apply formal light state before isolating optional probe work."""
         if self._device is None:
             return
         update = parse_light_shadow_update(self._device, message)
         if update is not None:
             self.async_apply_shadow_update(update)
-        observer = self._discovery_observer
+        observer = self._probe_observer
         if observer is None:
             return
         try:
             observer(message)
-        except Exception:  # noqa: BLE001 - discovery must not affect formal state
-            _LOGGER.error("AUPU discovery observer failed")
+        except Exception:  # noqa: BLE001 - probe must not affect formal state
+            _LOGGER.error("AUPU probe observer failed")
 
     @callback
-    def async_set_discovery_observer(
+    def async_set_probe_observer(
         self,
-        observer: DiscoveryObserver,
-        cancel: DiscoveryCancel,
+        observer: ProbeObserver,
+        cancel: ProbeCancel,
     ) -> Callable[[], None]:
-        """Attach the sole active discovery observer and return its remover."""
-        if self._discovery_observer is not None:
+        """Attach the sole active probe observer and return its remover."""
+        if self._probe_observer is not None:
             raise HomeAssistantError("discovery_busy")
-        self._discovery_observer = observer
-        self._discovery_cancel = cancel
+        self._probe_observer = observer
+        self._probe_cancel = cancel
 
         @callback
         def remove() -> None:
-            if self._discovery_observer is observer:
-                self._discovery_observer = None
-                self._discovery_cancel = None
+            if self._probe_observer is observer:
+                self._probe_observer = None
+                self._probe_cancel = None
 
         return remove
 
@@ -307,7 +301,7 @@ class AupuCoordinator:
         self._wss_healthy = connected and healthy
         if not connected:
             self._state_stale = True
-            cancel = self._discovery_cancel
+            cancel = self._probe_cancel
             if cancel is not None:
                 cancel()
         for listener in tuple(self._listeners):
@@ -317,7 +311,7 @@ class AupuCoordinator:
     def async_handle_wss_auth_failure(self) -> None:
         """Route transport authentication failure through the one-shot Reauth gate."""
         self._last_error_code = AupuAuthError.error_code
-        cancel = self._discovery_cancel
+        cancel = self._probe_cancel
         if cancel is not None:
             cancel()
         self._request_reauth_once()

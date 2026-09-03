@@ -30,7 +30,7 @@ from custom_components.aupu_q360.errors import AupuAuthError, AupuTemporaryError
 from custom_components.aupu_q360.light import AupuLight
 from custom_components.aupu_q360.light import async_setup_entry as async_setup_light
 from custom_components.aupu_q360.models import ApiResponse, AupuRuntimeData, DeviceConfig
-from custom_components.aupu_q360.shadow import AcceptedShadow, LightShadowUpdate, RawShadowEvent
+from custom_components.aupu_q360.shadow import AcceptedShadow, LightShadowUpdate
 from custom_components.aupu_q360.wss import AupuShadowWebSocket
 
 _TEST_LOOP = asyncio.new_event_loop()
@@ -428,10 +428,10 @@ def test_wss_auth_failure_reuses_deduplicated_reauth_entry(
     assert requests == [None]
 
 
-def test_discovery_observer_failure_cannot_block_light_or_expose_details(
+def test_probe_observer_failure_cannot_block_light_or_expose_details(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Catch optional discovery failures escaping before formal light state is applied."""
+    """Catch optional probe failures escaping before formal light state is applied."""
     device = DeviceConfig(did="123456789", tag="synthetic-tag")
     coordinator = AupuCoordinator(
         hass=cast(HomeAssistant, SimpleNamespace(data={})),
@@ -454,16 +454,11 @@ def test_discovery_observer_failure_cannot_block_light_or_expose_details(
         observed.append(message)
         raise RuntimeError(sentinel)
 
-    coordinator.async_set_discovery_observer(observe, lambda: cancelled.append(None))
+    coordinator.async_set_probe_observer(observe, lambda: cancelled.append(None))
     coordinator.async_apply_wss_connection(True, False)
     message = AcceptedShadow(
         topic_kind="update",
         state={"reported": {device.did: {"2": {"properties": {"1": False}}}}},
-        raw_event=RawShadowEvent(
-            "incoming",
-            "$aws/things/123456789/shadow/update/accepted",
-            b'{"state":{"reported":{"123456789":{"2":{"properties":{"1":false}}}}}}',
-        ),
     )
 
     coordinator.async_apply_shadow_message(message)
@@ -471,44 +466,36 @@ def test_discovery_observer_failure_cannot_block_light_or_expose_details(
     assert coordinator.is_on is False
     assert coordinator.light_state_source == "reported"
     assert observed == [message]
-    assert [record.getMessage() for record in caplog.records] == ["AUPU discovery observer failed"]
+    assert [record.getMessage() for record in caplog.records] == ["AUPU probe observer failed"]
     assert sentinel not in caplog.text
 
     coordinator.async_apply_wss_connection(False, False)
     assert cancelled == [None]
 
 
-def test_discovery_get_recorder_reaches_the_existing_wss_connection() -> None:
-    """Catch coordinator routing that drops the raw recorder or creates another transport."""
+def test_probe_get_reaches_the_existing_wss_connection_without_recorder() -> None:
+    """Catch coordinator routing that creates another transport or retains raw data."""
     coordinator = _coordinator(FakeApi())
     correlation_id = "disc-0123456789abcdef0123456789abcdef"
-    recorded: list[RawShadowEvent] = []
 
     class FakeWss:
         def __init__(self) -> None:
-            self.calls: list[tuple[str, Callable[[RawShadowEvent], None] | None]] = []
+            self.calls: list[str] = []
 
-        async def async_request_shadow_get(
-            self,
-            client_token: str,
-            record_outgoing: Callable[[RawShadowEvent], None] | None = None,
-        ) -> None:
-            self.calls.append((client_token, record_outgoing))
-            if record_outgoing is not None:
-                record_outgoing(RawShadowEvent("outgoing", "synthetic-topic", b"synthetic"))
+        async def async_request_shadow_get(self, client_token: str) -> None:
+            self.calls.append(client_token)
 
     transport = FakeWss()
     coordinator._wss = cast(Any, transport)
     coordinator.async_apply_wss_connection(True, False)
 
-    _run(coordinator.async_request_shadow_get(correlation_id, recorded.append))
+    _run(coordinator.async_request_shadow_get(correlation_id))
 
-    assert transport.calls == [(correlation_id, recorded.append)]
-    assert recorded == [RawShadowEvent("outgoing", "synthetic-topic", b"synthetic")]
+    assert transport.calls == [correlation_id]
 
 
-def test_prepare_discovery_renews_healthy_transport_without_erasing_light() -> None:
-    """Catch discovery transport renewal skipping health or clearing confirmed state."""
+def test_prepare_probe_renews_healthy_transport_without_erasing_light() -> None:
+    """Catch probe transport renewal skipping health or clearing confirmed state."""
     coordinator = _coordinator(FakeApi())
     confirmed_at = datetime(2026, 9, 3, 1, 2, 3, tzinfo=UTC)
     coordinator._now = lambda: confirmed_at
@@ -528,7 +515,7 @@ def test_prepare_discovery_renews_healthy_transport_without_erasing_light() -> N
     transport = FakeWss()
     coordinator._wss = cast(Any, transport)
 
-    _run(coordinator.async_prepare_discovery_transport())
+    _run(coordinator.async_prepare_probe_transport())
 
     assert transport.renew_timeouts == [45.0]
     assert coordinator.wss_connected is True
@@ -537,8 +524,8 @@ def test_prepare_discovery_renews_healthy_transport_without_erasing_light() -> N
     assert coordinator.last_confirmed_at == confirmed_at
 
 
-def test_prepare_discovery_rejects_invalid_runtime_states_before_renewal() -> None:
-    """Catch discovery renewing a stopped, reauthing, or incomplete WSS runtime."""
+def test_prepare_probe_rejects_invalid_runtime_states_before_renewal() -> None:
+    """Catch probe renewal of a stopped, reauthing, or incomplete WSS runtime."""
 
     class FakeWss:
         def __init__(self) -> None:
@@ -572,12 +559,12 @@ def test_prepare_discovery_rejects_invalid_runtime_states_before_renewal() -> No
 
     for coordinator in cases:
         with pytest.raises(HomeAssistantError, match="discovery_wss_unavailable"):
-            _run(coordinator.async_prepare_discovery_transport())
+            _run(coordinator.async_prepare_probe_transport())
 
     assert [transport.renew_calls for transport in transports] == [0, 0, 0]
 
 
-def test_prepare_discovery_rejects_transport_without_post_renew_health() -> None:
+def test_prepare_probe_rejects_transport_without_post_renew_health() -> None:
     """Catch a renewal return being trusted without connected and healthy callbacks."""
     coordinator = _coordinator(FakeApi())
 
@@ -589,7 +576,7 @@ def test_prepare_discovery_rejects_transport_without_post_renew_health() -> None
     coordinator._wss = cast(Any, FakeWss())
 
     with pytest.raises(HomeAssistantError, match="discovery_wss_unavailable"):
-        _run(coordinator.async_prepare_discovery_transport())
+        _run(coordinator.async_prepare_probe_transport())
 
 
 @pytest.mark.parametrize(

@@ -26,19 +26,18 @@ from .mqtt_codec import (
     encode_publish,
     encode_subscribe,
 )
-from .shadow import AcceptedShadow, RawShadowEvent
+from .shadow import AcceptedShadow
 
 _WSS_ENDPOINT = "wss://aii5h05kuofsj.ats.iot.cn-north-1.amazonaws.com.cn/mqtt"
 _RETRY_DELAYS = (2.0, 4.0, 8.0, 16.0, 30.0)
 _KEEP_ALIVE_SECONDS = 30
 _PINGRESP_TIMEOUT_SECONDS = 10
 _MAX_WSS_PACKET_BYTES = 64 * 1024
-_DISCOVERY_TOKEN = re.compile(r"disc-[0-9a-f]{32}")
+_PROBE_TOKEN = re.compile(r"disc-[0-9a-f]{32}")
 _LOGGER = logging.getLogger(__name__)
 
 ConnectionCallback = Callable[[bool, bool], None]
 ShadowParser = Callable[[str, bytes], AcceptedShadow | None]
-OutgoingRecorder = Callable[[RawShadowEvent], None]
 
 
 class AupuShadowWebSocket:
@@ -149,29 +148,19 @@ class AupuShadowWebSocket:
                 await self._async_stop_runner(finish_cleanup_on_cancellation=True)
                 raise
 
-    async def async_request_shadow_get(
-        self,
-        client_token: str,
-        record_outgoing: OutgoingRecorder | None = None,
-    ) -> None:
+    async def async_request_shadow_get(self, client_token: str) -> None:
         """Send one correlated Shadow get only on the current ready connection."""
-        if not isinstance(client_token, str) or _DISCOVERY_TOKEN.fullmatch(client_token) is None:
+        if not isinstance(client_token, str) or _PROBE_TOKEN.fullmatch(client_token) is None:
             raise AupuProtocolError
         websocket = self._active_websocket
         if websocket is None:
             raise AupuProtocolError
+        topic = f"$aws/things/{self._device.did}/shadow/get"
         payload = json.dumps({"clientToken": client_token}, separators=(",", ":")).encode("utf-8")
-        event = RawShadowEvent(
-            direction="outgoing",
-            topic=f"$aws/things/{self._device.did}/shadow/get",
-            payload=payload,
-        )
         async with self._send_lock:
             if websocket is not self._active_websocket:
                 raise AupuProtocolError
-            if record_outgoing is not None:
-                record_outgoing(event)
-            await websocket.send_bytes(encode_publish(event.topic, event.payload))
+            await websocket.send_bytes(encode_publish(topic, payload))
 
     def _runner_done(self, task: asyncio.Task[None]) -> None:
         """Release the completed task reference and consume unexpected task errors."""

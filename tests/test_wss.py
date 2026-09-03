@@ -23,7 +23,7 @@ from custom_components.aupu_q360.mqtt_codec import (
     decode_packets,
     encode_publish,
 )
-from custom_components.aupu_q360.shadow import AcceptedShadow, RawShadowEvent
+from custom_components.aupu_q360.shadow import AcceptedShadow
 from custom_components.aupu_q360.wss import _MAX_WSS_PACKET_BYTES, AupuShadowWebSocket
 
 WSS_ENDPOINT = "wss://aii5h05kuofsj.ats.iot.cn-north-1.amazonaws.com.cn/mqtt"
@@ -203,7 +203,6 @@ def _client(
         return AcceptedShadow(
             topic_kind="update",
             state={"reported": {DEVICE.did: {"2": {"properties": {"1": False}}}}},
-            raw_event=RawShadowEvent("incoming", topic, payload),
         )
 
     return AupuShadowWebSocket(
@@ -283,7 +282,6 @@ async def test_connect_subscribe_get_ping_shadow_and_disconnect_in_order() -> No
         AcceptedShadow(
             topic_kind="update",
             state={"reported": {DEVICE.did: {"2": {"properties": {"1": False}}}}},
-            raw_event=RawShadowEvent("incoming", UPDATE_ACCEPTED, b"synthetic-shadow"),
         )
     ]
 
@@ -463,7 +461,7 @@ async def test_renew_rejects_non_positive_health_timeout() -> None:
 
 @direct_step
 async def test_correlated_shadow_get_only_sends_on_the_current_ready_connection() -> None:
-    """Catch discovery gets being queued, replayed, or emitted before subscription."""
+    """Catch probe gets being queued, replayed, or emitted before subscription."""
     websocket = _ready_socket()
     sleep = ControlledSleep()
     client = _client(api=FakeApi(), session=FakeSession([websocket]), sleep=sleep)
@@ -474,54 +472,18 @@ async def test_correlated_shadow_get_only_sends_on_the_current_ready_connection(
 
     await client.async_start()
     await _wait_until(lambda: len(websocket.sent) == 4)
-    recorded: list[RawShadowEvent] = []
-    await client.async_request_shadow_get(client_token, recorded.append)
+    await client.async_request_shadow_get(client_token)
 
     packet = decode_packets(websocket.sent[-1])[0]
-    assert recorded == [
-        RawShadowEvent(
-            direction="outgoing",
-            topic="$aws/things/123456789/shadow/get",
-            payload=b'{"clientToken":"disc-0123456789abcdef0123456789abcdef"}',
-        )
-    ]
     assert packet.packet_type is PacketType.PUBLISH
-    assert packet.topic == recorded[0].topic
-    assert packet.payload == recorded[0].payload
+    assert packet.topic == "$aws/things/123456789/shadow/get"
+    assert packet.payload == b'{"clientToken":"disc-0123456789abcdef0123456789abcdef"}'
     assert json.loads(packet.payload) == {"clientToken": client_token}
 
     await client.async_stop()
     with pytest.raises(AupuProtocolError):
         await client.async_request_shadow_get(client_token)
     assert len(websocket.sent) == 6  # CONNECT, 2 SUBSCRIBE, 2 GET, DISCONNECT
-
-
-@direct_step
-async def test_outgoing_recorder_failure_prevents_the_shadow_get_send() -> None:
-    """Catch an unarchived discovery request escaping after its recorder fails."""
-    websocket = _ready_socket()
-    client = _client(
-        api=FakeApi(),
-        session=FakeSession([websocket]),
-        sleep=ControlledSleep(),
-    )
-    client_token = "disc-0123456789abcdef0123456789abcdef"
-    sentinel = RuntimeError("synthetic fixed recorder failure")
-
-    def fail_recording(event: RawShadowEvent) -> None:
-        assert event.direction == "outgoing"
-        raise sentinel
-
-    await client.async_start()
-    await _wait_until(lambda: len(websocket.sent) == 4)
-    sent_before = tuple(websocket.sent)
-
-    with pytest.raises(RuntimeError) as raised:
-        await client.async_request_shadow_get(client_token, fail_recording)
-
-    assert raised.value is sentinel
-    assert tuple(websocket.sent) == sent_before
-    await client.async_stop()
 
 
 @direct_step

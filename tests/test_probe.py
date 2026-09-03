@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import cast
@@ -129,6 +130,7 @@ async def test_probe_uses_only_correlated_gets_and_clears_on_stop() -> None:
 
     start = asyncio.create_task(probe.async_start())
     await _wait_until(lambda: len(requests) == 1)
+    assert re.fullmatch(r"disc-[0-9a-f]{32}", requests[0]) is not None
     assert observer is not None
     observer(_message("disc-00000000000000000000000000000000", changed))
     observer(_message(requests[0], changed, kind="update"))

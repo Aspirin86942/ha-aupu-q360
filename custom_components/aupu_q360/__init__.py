@@ -108,7 +108,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry[AupuRuntimeD
         nonlocal observer_remover
         if observer_remover is not None:
             raise RuntimeError("probe observer already active")
-        observer_remover = coordinator.async_set_discovery_observer(observer, cancel)
+        observer_remover = coordinator.async_set_probe_observer(observer, cancel)
 
     def deactivate_observer() -> None:
         nonlocal observer_remover
@@ -119,11 +119,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry[AupuRuntimeD
 
     probe = PanelStateProbe(
         device_id=device.did,
-        prepare_transport=coordinator.async_prepare_discovery_transport,
+        prepare_transport=coordinator.async_prepare_probe_transport,
         request_shadow_get=coordinator.async_request_shadow_get,
         activate_observer=activate_observer,
         deactivate_observer=deactivate_observer,
-        probe_available=lambda: coordinator.discovery_available,
+        probe_available=lambda: coordinator.probe_available,
     )
     entry.runtime_data.probe = probe
     entry.runtime_data.stoppers.extend((probe, coordinator))
