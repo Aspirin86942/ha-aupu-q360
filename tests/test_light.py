@@ -95,22 +95,6 @@ class IssueRecorder:
         self.deleted.append((domain, issue_id))
 
 
-class _NoopStore:
-    """Keep coordinator lifecycle tests independent from HA storage internals."""
-
-    def __init__(self, *args: object, **kwargs: object) -> None:
-        del args, kwargs
-
-    async def async_load(self) -> None:
-        return None
-
-    async def async_save(self, data: object) -> None:
-        del data
-
-    async def async_remove(self) -> None:
-        return None
-
-
 @pytest.fixture
 def issues(monkeypatch: pytest.MonkeyPatch) -> IssueRecorder:
     recorder = IssueRecorder()
@@ -122,7 +106,6 @@ def issues(monkeypatch: pytest.MonkeyPatch) -> IssueRecorder:
         "custom_components.aupu_q360.coordinator.ir.async_delete_issue",
         recorder.delete,
     )
-    monkeypatch.setattr("custom_components.aupu_q360.discovery_store.Store", _NoopStore)
     return recorder
 
 

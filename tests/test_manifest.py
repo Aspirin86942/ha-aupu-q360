@@ -115,6 +115,34 @@ def test_temporary_probe_public_contract_is_exact(project_root: Path) -> None:
     assert "App 层" in runbook
 
 
+def test_persistent_discovery_modules_are_absent(project_root: Path) -> None:
+    """Catch a persistent discovery module or runtime surface returning."""
+    component = project_root / "custom_components/aupu_q360"
+    obsolete = {
+        "discovery.py",
+        "discovery_analysis.py",
+        "discovery_catalog.py",
+        "discovery_models.py",
+        "discovery_report_schema.py",
+        "discovery_sanitizer.py",
+        "discovery_store.py",
+        "raw_discovery_archive.py",
+    }
+    assert obsolete.isdisjoint(path.name for path in component.glob("*.py"))
+
+    production_text = "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted(component.glob("*.py"))
+    )
+    for forbidden in (
+        "Raw" + "DiscoveryArchive",
+        "Discovery" + "ReportStore",
+        "PanelState" + "DiscoverySession",
+        "raw_" + "archive_enabled",
+        "state_" + "discovery",
+    ):
+        assert forbidden not in production_text
+
+
 def test_manifest_is_hacs_installable(project_root: Path) -> None:
     """Expose accidental metadata regressions before HACS installs the integration."""
     manifest = _load_json(project_root / "custom_components/aupu_q360/manifest.json")

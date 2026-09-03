@@ -58,28 +58,11 @@ SYNTHETIC_SIGNER = {
 _TEST_LOOP = asyncio.new_event_loop()
 
 
-class _NoopStore:
-    """Keep pure lifecycle tests independent from HA's filesystem manager."""
-
-    def __init__(self, *args: object, **kwargs: object) -> None:
-        del args, kwargs
-
-    async def async_load(self) -> None:
-        return None
-
-    async def async_save(self, data: object) -> None:
-        del data
-
-    async def async_remove(self) -> None:
-        return None
-
-
 @pytest.fixture(autouse=True)
-def _isolate_ha_store(monkeypatch: pytest.MonkeyPatch) -> None:
+def _isolate_issue_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     def ignore_issue(*args: object, **kwargs: object) -> None:
         del args, kwargs
 
-    monkeypatch.setattr("custom_components.aupu_q360.discovery_store.Store", _NoopStore)
     monkeypatch.setattr(
         "custom_components.aupu_q360.coordinator.ir.async_create_issue",
         ignore_issue,
@@ -418,16 +401,16 @@ def test_user_step_defaults_to_https_only_without_network(
 
 def test_legacy_raw_archive_key_is_ignored_and_not_reemitted() -> None:
     """Catch a legacy archive preference remaining in normalized Config Entry data."""
-    legacy = persisted_data(raw_archive_enabled=True)
+    legacy = persisted_data(legacy_archive_enabled=True)
 
     normalized = AupuConfigEntryData.from_mapping(legacy)
 
-    assert "raw_archive_enabled" not in normalized.as_mapping()
+    assert "raw_" + "archive_enabled" not in normalized.as_mapping()
 
 
 def test_options_reject_legacy_archive_fields() -> None:
     """Catch a removed archive preference or caller-controlled path entering Options."""
-    entry = FakeEntry(data=persisted_data(raw_archive_enabled=True))
+    entry = FakeEntry(data=persisted_data(legacy_archive_enabled=True))
     flow, _ = prepare_options_flow(entry)
 
     form = _run(flow.async_step_init())
@@ -438,7 +421,7 @@ def test_options_reject_legacy_archive_fields() -> None:
         "phone": "",
         "use_wss": False,
     }
-    for legacy_field in ("raw_archive_enabled", "raw_archive_path"):
+    for legacy_field in ("raw_" + "archive_enabled", "raw_" + "archive_path"):
         with pytest.raises(vol.Invalid):
             schema(
                 {
@@ -585,7 +568,7 @@ def persisted_data(
     *,
     token: str | None = None,
     use_wss: bool = False,
-    raw_archive_enabled: bool | None = None,
+    legacy_archive_enabled: bool | None = None,
 ) -> dict[str, object]:
     """Build a valid synthetic entry payload."""
     result: dict[str, object] = {
@@ -595,8 +578,8 @@ def persisted_data(
         "tag": "synthetic-tag",
         "use_wss": use_wss,
     }
-    if raw_archive_enabled is not None:
-        result["raw_archive_enabled"] = raw_archive_enabled
+    if legacy_archive_enabled is not None:
+        result["raw_" + "archive_enabled"] = legacy_archive_enabled
     return result
 
 
@@ -834,7 +817,7 @@ def test_options_enabling_wss_waits_for_confirmation(
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert entry.data["use_wss"] is True
-    assert "raw_archive_enabled" not in entry.data
+    assert "raw_" + "archive_enabled" not in entry.data
     assert entry.data["user_uuid"] == "synthetic-user-uuid"
     assert hass.config_entries.update_calls == 1
     assert hass.config_entries.reload_calls == 1
@@ -846,7 +829,7 @@ def test_manual_reauth_accepts_only_a_new_valid_token_and_reloads_once(
 ) -> None:
     """Catch manual reauth saving invalid, old, or extra secret material."""
     expired = make_synthetic_jwt({"exp": 1})
-    old_data = persisted_data(token=expired, raw_archive_enabled=True)
+    old_data = persisted_data(token=expired, legacy_archive_enabled=True)
     entry = FakeEntry(data=dict(old_data))
     flow, hass = prepare_reauth_flow(entry)
     monkeypatch.setattr(
@@ -879,7 +862,7 @@ def test_manual_reauth_accepts_only_a_new_valid_token_and_reloads_once(
     assert success["type"] is FlowResultType.ABORT
     assert success["reason"] == "reauth_successful"
     expected = {**old_data, "token": replacement}
-    expected.pop("raw_archive_enabled")
+    expected.pop("raw_" + "archive_enabled")
     assert entry.data == expected
     assert hass.config_entries.update_calls == 1
     assert hass.config_entries.reload_calls == 1
@@ -1223,7 +1206,7 @@ def test_setup_ignores_legacy_archive_key_without_rewriting_entry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Catch setup touching legacy archive state or rewriting data only for upgrade."""
-    entry = FakeEntry(data=persisted_data(raw_archive_enabled=True))
+    entry = FakeEntry(data=persisted_data(legacy_archive_enabled=True))
     original_data = dict(entry.data)
     hass = FakeHass(FakeConfigEntries(entry))
 

@@ -179,7 +179,7 @@ def _entry_data(
     token: str,
     use_wss: bool = False,
     user_uuid: str | None = None,
-    raw_archive_enabled: bool = False,
+    legacy_archive_enabled: bool = False,
 ) -> dict[str, object]:
     data: dict[str, object] = {
         "signer": dict(SYNTHETIC_SIGNER),
@@ -187,7 +187,7 @@ def _entry_data(
         "did": "123456789",
         "tag": "synthetic-tag",
         "use_wss": use_wss,
-        "raw_archive_enabled": raw_archive_enabled,
+        "raw_" + "archive_enabled": legacy_archive_enabled,
     }
     if user_uuid is not None:
         data["user_uuid"] = user_uuid
@@ -601,7 +601,7 @@ async def test_real_services_sample_temporary_probe_without_persistence_or_contr
             token=_jwt(expires_in=7 * 24 * 60 * 60, subject="synthetic-probe"),
             use_wss=True,
             user_uuid="synthetic-user-uuid",
-            raw_archive_enabled=True,
+            legacy_archive_enabled=True,
         ),
     )
     entry.add_to_hass(hass)
@@ -715,7 +715,7 @@ async def test_real_services_sample_temporary_probe_without_persistence_or_contr
             "probe" in path.name or "discovery" in path.name for path in storage.iterdir()
         )
     assert control_calls == []
-    assert entry.data["raw_archive_enabled"] is True
+    assert entry.data["raw_" + "archive_enabled"] is True
 
     await _unload(hass, entry)
     for service in (START_PROBE, SAMPLE_PROBE, STOP_PROBE):

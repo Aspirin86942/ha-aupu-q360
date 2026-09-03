@@ -46,7 +46,7 @@ def test_diagnostics_do_not_expose_discovery_or_probe_state() -> None:
 
     result = _run(async_get_config_entry_diagnostics(None, cast(Any, entry)))
 
-    assert "state_discovery" not in result
+    assert "state_" + "discovery" not in result
     assert "probe" not in result
     assert "sample_count" not in json.dumps(result)
 
