@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal, NoReturn
 
@@ -26,6 +27,58 @@ class AcceptedShadow:
     topic_kind: Literal["get", "update"]
     state: dict[str, Any] = field(repr=False)
     client_token: str | None = field(default=None, repr=False)
+
+
+type PanelMode = Literal[
+    "off",
+    "ai_thermostatic_warmth",
+    "deodorization_sterilization",
+    "ventilation",
+    "air_blowing",
+    "normal_drying",
+    "thermostatic_drying",
+    "unknown",
+]
+
+PANEL_MODE_OPTIONS: tuple[PanelMode, ...] = (
+    "off",
+    "ai_thermostatic_warmth",
+    "deodorization_sterilization",
+    "ventilation",
+    "air_blowing",
+    "normal_drying",
+    "thermostatic_drying",
+    "unknown",
+)
+
+_MODE_BY_VALUE: dict[int, PanelMode] = {
+    0: "off",
+    18: "ai_thermostatic_warmth",
+    21: "deodorization_sterilization",
+    7: "ventilation",
+    2: "air_blowing",
+    9: "normal_drying",
+    4: "thermostatic_drying",
+}
+_MISSING = object()
+
+
+@dataclass(frozen=True, slots=True)
+class PanelFieldUpdate[T]:
+    """One reported field, distinguishing omission from an unusable value."""
+
+    present: bool
+    value: T | None
+
+
+@dataclass(frozen=True, slots=True)
+class PanelStateUpdate:
+    """Only the four confirmed Q360 panel paths from one reported message."""
+
+    mode: PanelFieldUpdate[PanelMode]
+    night_light: PanelFieldUpdate[bool]
+    fan_level: PanelFieldUpdate[int]
+    ai_target_temperature: PanelFieldUpdate[int]
 
 
 def parse_accepted_shadow(
@@ -66,6 +119,55 @@ def parse_light_shadow_update(
     return LightShadowUpdate(is_on=desired, confirmed=False, source="desired")
 
 
+def parse_panel_shadow_update(
+    device: DeviceConfig,
+    message: AcceptedShadow,
+) -> PanelStateUpdate | None:
+    """Parse only confirmed panel fields from the target reported state."""
+    reported = message.state.get("reported")
+    if reported is None:
+        return None
+    if not isinstance(reported, dict):
+        raise AupuProtocolError
+    device_state = reported.get(device.did)
+    if device_state is None:
+        return None
+    if not isinstance(device_state, dict):
+        raise AupuProtocolError
+
+    update = PanelStateUpdate(
+        mode=_field_update(
+            _panel_property(device_state, "3", "2"),
+            _normalize_mode,
+        ),
+        night_light=_field_update(
+            _panel_property(device_state, "6", "4"),
+            _normalize_bool,
+        ),
+        fan_level=_field_update(
+            _panel_property(device_state, "6", "5"),
+            lambda value: _normalize_bounded_int(value, minimum=1, maximum=5),
+        ),
+        ai_target_temperature=_field_update(
+            _panel_property(device_state, "3", "3"),
+            lambda value: _normalize_bounded_int(value, minimum=30, maximum=42),
+        ),
+    )
+    return (
+        update
+        if any(
+            field.present
+            for field in (
+                update.mode,
+                update.night_light,
+                update.fan_level,
+                update.ai_target_temperature,
+            )
+        )
+        else None
+    )
+
+
 def parse_shadow_update(
     device: DeviceConfig, topic: str, payload: bytes
 ) -> LightShadowUpdate | None:
@@ -87,6 +189,47 @@ def _decode_shadow_document(payload: bytes) -> dict[str, Any]:
     if not isinstance(document, dict):
         raise AupuProtocolError
     return document
+
+
+def _panel_property(
+    device_state: dict[str, Any],
+    service_id: str,
+    property_id: str,
+) -> object:
+    service = device_state.get(service_id, _MISSING)
+    if service is _MISSING:
+        return _MISSING
+    if not isinstance(service, dict):
+        raise AupuProtocolError
+    properties = service.get("properties", _MISSING)
+    if properties is _MISSING:
+        return _MISSING
+    if not isinstance(properties, dict):
+        raise AupuProtocolError
+    return properties.get(property_id, _MISSING)
+
+
+def _field_update[T](
+    raw_value: object,
+    normalize: Callable[[object], T | None],
+) -> PanelFieldUpdate[T]:
+    if raw_value is _MISSING:
+        return PanelFieldUpdate(present=False, value=None)
+    return PanelFieldUpdate(present=True, value=normalize(raw_value))
+
+
+def _normalize_mode(value: object) -> PanelMode | None:
+    if type(value) is not int:
+        return None
+    return _MODE_BY_VALUE.get(value, "unknown")
+
+
+def _normalize_bool(value: object) -> bool | None:
+    return value if type(value) is bool else None
+
+
+def _normalize_bounded_int(value: object, *, minimum: int, maximum: int) -> int | None:
+    return value if type(value) is int and minimum <= value <= maximum else None
 
 
 def _target_topic_kind(device: DeviceConfig, topic: str) -> Literal["get", "update"] | None:

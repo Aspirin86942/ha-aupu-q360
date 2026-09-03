@@ -15,12 +15,141 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from custom_components.aupu_q360 import shadow
 from custom_components.aupu_q360.errors import AupuProtocolError
 from custom_components.aupu_q360.models import DeviceConfig
-from custom_components.aupu_q360.shadow import LightShadowUpdate, parse_shadow_update
+from custom_components.aupu_q360.shadow import (
+    AcceptedShadow,
+    LightShadowUpdate,
+    PanelFieldUpdate,
+    PanelStateUpdate,
+    parse_panel_shadow_update,
+    parse_shadow_update,
+)
 
 
 DEVICE = DeviceConfig(did="123", tag="synthetic")
 GET_ACCEPTED = "$aws/things/123/shadow/get/accepted"
 UPDATE_ACCEPTED = "$aws/things/123/shadow/update/accepted"
+
+
+def _panel_message(
+    *,
+    service_3: dict[str, object] | None = None,
+    service_6: dict[str, object] | None = None,
+    section: str = "reported",
+) -> AcceptedShadow:
+    device_state: dict[str, object] = {}
+    if service_3 is not None:
+        device_state["3"] = {"properties": service_3}
+    if service_6 is not None:
+        device_state["6"] = {"properties": service_6}
+    return AcceptedShadow(
+        topic_kind="update",
+        state={section: {DEVICE.did: device_state}},
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw_mode", "expected"),
+    [
+        (0, "off"),
+        (18, "ai_thermostatic_warmth"),
+        (21, "deodorization_sterilization"),
+        (7, "ventilation"),
+        (2, "air_blowing"),
+        (9, "normal_drying"),
+        (4, "thermostatic_drying"),
+        (999, "unknown"),
+    ],
+)
+def test_panel_mode_uses_only_confirmed_mapping(raw_mode: int, expected: str) -> None:
+    update = parse_panel_shadow_update(
+        DEVICE,
+        _panel_message(service_3={"2": raw_mode}),
+    )
+
+    assert update is not None
+    assert update.mode == PanelFieldUpdate(present=True, value=expected)
+    assert update.night_light == PanelFieldUpdate(present=False, value=None)
+    assert update.fan_level == PanelFieldUpdate(present=False, value=None)
+    assert update.ai_target_temperature == PanelFieldUpdate(present=False, value=None)
+
+
+def test_panel_full_reported_snapshot_is_normalized() -> None:
+    update = parse_panel_shadow_update(
+        DEVICE,
+        _panel_message(
+            service_3={"2": 7, "3": 36},
+            service_6={"4": False, "5": 5},
+        ),
+    )
+
+    assert update == PanelStateUpdate(
+        mode=PanelFieldUpdate(present=True, value="ventilation"),
+        night_light=PanelFieldUpdate(present=True, value=False),
+        fan_level=PanelFieldUpdate(present=True, value=5),
+        ai_target_temperature=PanelFieldUpdate(present=True, value=36),
+    )
+
+
+def test_panel_partial_update_distinguishes_missing_from_invalid() -> None:
+    update = parse_panel_shadow_update(
+        DEVICE,
+        _panel_message(
+            service_3={"2": "7", "3": 29},
+            service_6={"4": 1, "5": 6},
+        ),
+    )
+
+    assert update == PanelStateUpdate(
+        mode=PanelFieldUpdate(present=True, value=None),
+        night_light=PanelFieldUpdate(present=True, value=None),
+        fan_level=PanelFieldUpdate(present=True, value=None),
+        ai_target_temperature=PanelFieldUpdate(present=True, value=None),
+    )
+
+
+def test_panel_desired_and_unrelated_reported_paths_are_ignored() -> None:
+    desired = parse_panel_shadow_update(
+        DEVICE,
+        _panel_message(service_3={"2": 18, "3": 36}, section="desired"),
+    )
+    unrelated = parse_panel_shadow_update(
+        DEVICE,
+        AcceptedShadow(
+            topic_kind="update",
+            state={
+                "reported": {
+                    DEVICE.did: {
+                        "4": {"properties": {"1": 35}},
+                        "6": {"properties": {"1": 90, "23": 1}},
+                    }
+                }
+            },
+        ),
+    )
+
+    assert desired is None
+    assert unrelated is None
+
+
+@pytest.mark.parametrize(
+    ("service_3", "service_6"),
+    [
+        ({"3": 30}, {"5": 1}),
+        ({"3": 42}, {"5": 5}),
+    ],
+)
+def test_panel_numeric_boundaries_are_inclusive(
+    service_3: dict[str, object],
+    service_6: dict[str, object],
+) -> None:
+    update = parse_panel_shadow_update(
+        DEVICE,
+        _panel_message(service_3=service_3, service_6=service_6),
+    )
+
+    assert update is not None
+    assert update.ai_target_temperature.value == service_3["3"]
+    assert update.fan_level.value == service_6["5"]
 
 
 def test_accepted_shadow_is_decoded_once_without_repr_exposure() -> None:
