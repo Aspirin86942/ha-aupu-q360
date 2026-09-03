@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
 
@@ -21,8 +22,12 @@ from .models import DeviceConfig
 from .shadow import (
     AcceptedShadow,
     LightShadowUpdate,
+    PanelFieldUpdate,
+    PanelMode,
+    PanelStateUpdate,
     parse_accepted_shadow,
     parse_light_shadow_update,
+    parse_panel_shadow_update,
 )
 from .wss import AupuShadowWebSocket
 
@@ -31,6 +36,22 @@ StateClock = Callable[[], datetime]
 ProbeObserver = Callable[[AcceptedShadow], None]
 ProbeCancel = Callable[[], None]
 _LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class _PanelFieldState[T]:
+    value: T | None = None
+    fresh: bool = False
+
+    def apply(self, update: PanelFieldUpdate[T]) -> bool:
+        if not update.present:
+            return False
+        self.value = update.value
+        self.fresh = update.value is not None
+        return True
+
+    def mark_stale(self) -> None:
+        self.fresh = False
 
 
 def _utc_now() -> datetime:
@@ -74,6 +95,10 @@ class AupuCoordinator:
         self._last_confirmed_at: datetime | None = None
         self._wss: AupuShadowWebSocket | None = None
         self._device = device
+        self._panel_mode = _PanelFieldState[PanelMode]()
+        self._night_light = _PanelFieldState[bool]()
+        self._fan_level = _PanelFieldState[int]()
+        self._ai_target_temperature = _PanelFieldState[int]()
         self._probe_observer: ProbeObserver | None = None
         self._probe_cancel: ProbeCancel | None = None
         if use_wss:
@@ -113,6 +138,61 @@ class AupuCoordinator:
     def wss_healthy(self) -> bool:
         """Return whether the current WSS session received a PINGRESP."""
         return self._wss_healthy
+
+    @property
+    def panel_mode(self) -> PanelMode | None:
+        """Return the latest normalized panel mode."""
+        return self._panel_mode.value
+
+    @property
+    def night_light_is_on(self) -> bool | None:
+        """Return the latest normalized night-light state."""
+        return self._night_light.value
+
+    @property
+    def fan_level(self) -> int | None:
+        """Return the latest normalized fan level."""
+        return self._fan_level.value
+
+    @property
+    def ai_target_temperature(self) -> int | None:
+        """Return the latest normalized AI target temperature."""
+        return self._ai_target_temperature.value
+
+    def _panel_field_available[T](self, field: _PanelFieldState[T]) -> bool:
+        return self._wss_connected and field.fresh and field.value is not None
+
+    @property
+    def panel_mode_available(self) -> bool:
+        """Return whether the current connection confirmed a usable mode."""
+        return self._panel_field_available(self._panel_mode)
+
+    @property
+    def night_light_available(self) -> bool:
+        """Return whether the current connection confirmed the night light."""
+        return self._panel_field_available(self._night_light)
+
+    @property
+    def fan_level_available(self) -> bool:
+        """Return whether the current connection confirmed the fan level."""
+        return self._panel_field_available(self._fan_level)
+
+    @property
+    def ai_target_temperature_available(self) -> bool:
+        """Return whether the current connection confirmed the target temperature."""
+        return self._panel_field_available(self._ai_target_temperature)
+
+    @property
+    def panel_state_available(self) -> bool:
+        """Return whether any formal panel field is currently usable."""
+        return any(
+            (
+                self.panel_mode_available,
+                self.night_light_available,
+                self.fan_level_available,
+                self.ai_target_temperature_available,
+            )
+        )
 
     @property
     def probe_available(self) -> bool:
@@ -168,6 +248,7 @@ class AupuCoordinator:
             self._wss_connected = False
             self._wss_healthy = False
             self._state_stale = True
+            self._mark_panel_state_stale()
             self._listeners.clear()
             self._probe_observer = None
             self._probe_cancel = None
@@ -233,6 +314,16 @@ class AupuCoordinator:
         source: LightStateSource = "unknown",
     ) -> None:
         """Apply desired or physically confirmed state and notify entities."""
+        self._apply_light_state(is_on=is_on, source=source)
+        self._notify_listeners()
+
+    def _apply_light_state(
+        self,
+        *,
+        is_on: bool,
+        source: LightStateSource,
+    ) -> None:
+        """Apply light state without notifying listeners."""
         confirmed = source in ("reported", "get_reported")
         confirmed_at: datetime | None = None
         if confirmed:
@@ -247,8 +338,25 @@ class AupuCoordinator:
         self._state_stale = not confirmed
         if confirmed_at is not None:
             self._last_confirmed_at = confirmed_at
+
+    def _notify_listeners(self) -> None:
+        """Notify a stable snapshot of registered listeners."""
         for listener in tuple(self._listeners):
             listener()
+
+    def _apply_panel_state_update(self, update: PanelStateUpdate) -> bool:
+        changed = False
+        changed |= self._panel_mode.apply(update.mode)
+        changed |= self._night_light.apply(update.night_light)
+        changed |= self._fan_level.apply(update.fan_level)
+        changed |= self._ai_target_temperature.apply(update.ai_target_temperature)
+        return changed
+
+    def _mark_panel_state_stale(self) -> None:
+        self._panel_mode.mark_stale()
+        self._night_light.mark_stale()
+        self._fan_level.mark_stale()
+        self._ai_target_temperature.mark_stale()
 
     @callback
     def async_apply_shadow_update(self, update: LightShadowUpdate) -> None:
@@ -263,9 +371,19 @@ class AupuCoordinator:
         """Apply formal light state before isolating optional probe work."""
         if self._device is None:
             return
-        update = parse_light_shadow_update(self._device, message)
-        if update is not None:
-            self.async_apply_shadow_update(update)
+        light_update = parse_light_shadow_update(self._device, message)
+        panel_update = parse_panel_shadow_update(self._device, message)
+        applied = False
+        if light_update is not None:
+            self._apply_light_state(
+                is_on=light_update.is_on,
+                source=light_update.source,
+            )
+            applied = True
+        if panel_update is not None:
+            applied |= self._apply_panel_state_update(panel_update)
+        if applied:
+            self._notify_listeners()
         observer = self._probe_observer
         if observer is None:
             return
@@ -301,11 +419,11 @@ class AupuCoordinator:
         self._wss_healthy = connected and healthy
         if not connected:
             self._state_stale = True
+            self._mark_panel_state_stale()
             cancel = self._probe_cancel
             if cancel is not None:
                 cancel()
-        for listener in tuple(self._listeners):
-            listener()
+        self._notify_listeners()
 
     @callback
     def async_handle_wss_auth_failure(self) -> None:
