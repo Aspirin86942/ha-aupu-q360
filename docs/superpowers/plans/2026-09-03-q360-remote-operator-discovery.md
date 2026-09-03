@@ -179,7 +179,7 @@ git diff --exit-code -- custom_components/aupu_q360/services.yaml
 git status --short
 ```
 
-Expected: only the two JSON files and `tests/test_manifest.py` are modified; the plan file may remain untracked and must not be staged with this task.
+Expected: only the two JSON files and `tests/test_manifest.py` are modified; the tracked plan file remains unchanged in this task.
 
 After the task's commit authorization is in force:
 
@@ -197,6 +197,8 @@ git commit -m "fix(状态发现): 支持远程操作者提示"
 - Modify: `tests/test_manifest.py:263-326`
 - Modify: `README.md:70-97`
 - Modify: `docs/q360-read-only-discovery-runbook.md:1-200`
+- Modify: `docs/superpowers/specs/2026-09-03-q360-remote-operator-discovery-design.md:168-181`
+- Modify: `docs/superpowers/plans/2026-09-03-q360-remote-operator-discovery.md:224-369`
 
 **Interfaces:**
 
@@ -394,7 +396,7 @@ git status --short
 git diff --name-only
 ```
 
-Expected: Task 1 is already committed; only `README.md`、运行手册、`tests/test_manifest.py` and the untracked plan are present.
+Expected: Task 1 is already committed; only `README.md`、运行手册、远程设计规格、实施计划和 `tests/test_manifest.py` are modified.
 
 After the task's commit authorization is in force:
 
@@ -410,6 +412,7 @@ git commit -m "docs(状态发现): 改为手机远程实验流程"
 **Files:**
 
 - Modify: `tests/test_manifest.py:16`
+- Modify: `tests/test_diagnostics.py:104,139,190`
 - Modify: `pyproject.toml:3`
 - Modify: `custom_components/aupu_q360/manifest.json:11`
 - Modify: `custom_components/aupu_q360/const.py:4`
@@ -418,7 +421,7 @@ git commit -m "docs(状态发现): 改为手机远程实验流程"
 **Interfaces:**
 
 - Consumes: Task 1 和 Task 2 已通过的提示、翻译与文档契约。
-- Produces: 所有项目版本源一致的 `0.2.1` 发布候选，不改变 Python floor、依赖解析或运行时接口。
+- Produces: 所有项目版本源和 Diagnostics 当前版本白名单一致的 `0.2.1` 发布候选，不改变 Python floor、依赖解析或运行时接口。
 
 - [ ] **Step 1: 先把版本契约改为 `0.2.1`**
 
@@ -470,12 +473,23 @@ uv lock --offline
 不得被替换。运行 `git diff -- uv.lock`，如果出现依赖版本、source、resolution marker 或哈希变化，
 停止并调查，不能提交扩大后的 lock diff。
 
+Diagnostics 的三个当前运行版本白名单断言也必须同步为独立字面量：
+
+```python
+"integration_version": "0.2.1",
+```
+
+只修改 `test_diagnostics_build_only_the_allowed_scalar_whitelist`、
+`test_unloaded_and_incomplete_runtime_keep_the_same_whitelist` 和
+`test_diagnostics_fold_secret_bearing_attribute_and_time_errors_to_defaults` 的期望值。其他测试中的
+`0.2.0` 是报告兼容性或分析器的合成输入，必须保留。
+
 - [ ] **Step 4: 运行版本和完整 manifest 契约测试**
 
 Run:
 
 ```bash
-uv run pytest tests/test_manifest.py -v
+uv run pytest tests/test_manifest.py tests/test_diagnostics.py -v
 uv lock --check --offline
 ```
 
@@ -512,24 +526,24 @@ git status --short
 
 Expected:
 
-- the first command lists only Task 3 的四个版本文件 and `tests/test_manifest.py`；Task 1/2 已分别提交；
+- the first command lists only Task 3 的四个版本文件、`tests/test_manifest.py` and `tests/test_diagnostics.py`；Task 1/2 已分别提交；
 - the second command has no output；
 - the third command has no output, proving the discovery modules contain no forbidden control reference or official-control-surface integration；
-- the plan file may remain untracked and `.codegraph/` does not appear in staged content.
+- the plan file is tracked, and `.codegraph/` does not appear in staged content.
 
 - [ ] **Step 7: 检查并提交 Task 3**
 
 After the task's commit authorization is in force:
 
 ```bash
-git add pyproject.toml uv.lock custom_components/aupu_q360/manifest.json custom_components/aupu_q360/const.py tests/test_manifest.py
+git add pyproject.toml uv.lock custom_components/aupu_q360/manifest.json custom_components/aupu_q360/const.py tests/test_manifest.py tests/test_diagnostics.py docs/superpowers/plans/2026-09-03-q360-remote-operator-discovery.md
 git diff --cached --check
 git diff --cached --name-status
 git commit -m "chore(release): bump version to 0.2.1"
 git status --short
 ```
 
-Expected: the commit contains exactly four version-bearing files plus `tests/test_manifest.py`; afterward only the untracked plan remains.
+Expected: the commit contains exactly four version-bearing files, two focused test files, and this corrected plan file; the worktree is clean afterward.
 
 ## Post-Implementation Authorization Gates
 
