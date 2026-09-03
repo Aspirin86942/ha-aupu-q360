@@ -59,7 +59,7 @@ _INVARIANT_LIMITS = {
     "mqtt_packet_bytes": 65_536,
     "raw_archive_bytes": 64 * 1024 * 1024,
 }
-_TIMEOUT_PROFILES = frozenset({(120, 3600), (300, 3300)})
+_TIMEOUT_PROFILES = frozenset({(120, 3600), (300, 3300), (900, 3300)})
 _LIMIT_KEYS = {*_INVARIANT_LIMITS, "stage_timeout_seconds", "session_timeout_seconds"}
 _VALUE_KINDS = frozenset({"boolean", "number", "null", "string", "timestamp", "object", "array"})
 _DIRECTIONS = frozenset(

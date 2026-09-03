@@ -228,7 +228,7 @@ def build_discovery_report(
         "candidates": public_candidates,
         "limits": {
             "snapshot_timeout_seconds": 10,
-            "stage_timeout_seconds": 300,
+            "stage_timeout_seconds": 900,
             "session_timeout_seconds": 3300,
             "max_changes_per_phase": 256,
             "mqtt_packet_bytes": 65_536,

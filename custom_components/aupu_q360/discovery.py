@@ -62,7 +62,7 @@ type Clock = Callable[[], datetime]
 type TransportPreparer = Callable[[], Awaitable[None]]
 
 _DEFAULT_SNAPSHOT_TIMEOUT = 10.0
-_DEFAULT_STAGE_TIMEOUT = 300.0
+_DEFAULT_STAGE_TIMEOUT = 900.0
 _DEFAULT_SESSION_TIMEOUT = 3300.0
 _DEFAULT_MAX_CHANGES = 256
 _LOGGER = logging.getLogger(__name__)
