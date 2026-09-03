@@ -685,7 +685,7 @@ wheels = [
 
 [[package]]
 name = "aupu-q360-ha"
-version = "0.2.4"
+version = "0.3.0"
 source = { virtual = "." }
 
 [package.dev-dependencies]

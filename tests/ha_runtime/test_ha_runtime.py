@@ -29,7 +29,6 @@ from custom_components.aupu_q360.diagnostics import (
 )
 from custom_components.aupu_q360.models import ApiResponse
 from custom_components.aupu_q360.mqtt_codec import encode_publish
-from custom_components.aupu_q360.shadow import LightShadowUpdate
 from custom_components.aupu_q360.wss import AupuShadowWebSocket
 
 pytestmark = [
@@ -194,10 +193,12 @@ async def _queue_shadow_update(
     hass: HomeAssistant,
     websocket: _FakeWebSocket,
     state: dict[str, object],
+    *,
+    topic_suffix: str = "update/accepted",
 ) -> None:
     websocket.queue_binary(
         encode_publish(
-            "$aws/things/123456789/shadow/update/accepted",
+            f"$aws/things/123456789/shadow/{topic_suffix}",
             json.dumps({"state": state}, separators=(",", ":")).encode(),
         )
     )
@@ -344,9 +345,19 @@ async def test_real_entry_manager_exposes_one_light_service_and_diagnostics(
         "last_error_code",
         "light_state_source",
         "assumed_state",
+        "panel_mode",
+        "night_light",
+        "fan_level",
+        "ai_target_temperature",
+        "panel_state_available",
     }
     assert diagnostics["last_error_code"] == "none"
     assert diagnostics["light_state_source"] == "command"
+    assert diagnostics["panel_mode"] == "unavailable"
+    assert diagnostics["night_light"] is None
+    assert diagnostics["fan_level"] is None
+    assert diagnostics["ai_target_temperature"] is None
+    assert diagnostics["panel_state_available"] is False
 
     await _unload(hass, entry)
     assert not hasattr(entry, "runtime_data")
@@ -389,6 +400,7 @@ async def test_real_entry_manager_starts_and_stops_fake_wss_without_task_leak(
     session = _FakeSession(websocket)
     sleep = _ControlledSleep()
     original_init = AupuShadowWebSocket.__init__
+    control_calls: list[bool] = []
 
     def init_with_fake_sleep(
         client: AupuShadowWebSocket,
@@ -406,8 +418,14 @@ async def test_real_entry_manager_starts_and_stops_fake_wss_without_task_leak(
             token_key_name="synthetic-token-key",
         )
 
+    async def fake_set_light(self: AupuApiClient, is_on: bool) -> ApiResponse:
+        del self
+        control_calls.append(is_on)
+        return ApiResponse(status=200, result={}, timestamp=0)
+
     monkeypatch.setattr(AupuShadowWebSocket, "__init__", init_with_fake_sleep)
     monkeypatch.setattr(AupuApiClient, "get_wss_credentials", fake_get_wss_credentials)
+    monkeypatch.setattr(AupuApiClient, "set_light", fake_set_light)
     monkeypatch.setattr(
         "custom_components.aupu_q360.async_get_clientsession",
         lambda _: session,
@@ -438,24 +456,76 @@ async def test_real_entry_manager_starts_and_stops_fake_wss_without_task_leak(
     assert len(session.calls) == 1
 
     entities = er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
-    assert sorted(entity.domain for entity in entities) == ["binary_sensor", "light"]
-    channel = next(entity for entity in entities if entity.domain == "binary_sensor")
+    assert sorted(entity.domain for entity in entities) == [
+        "binary_sensor",
+        "binary_sensor",
+        "light",
+        "sensor",
+        "sensor",
+        "sensor",
+    ]
+    channel = next(entity for entity in entities if entity.unique_id.endswith("_state_channel"))
+    night_light = next(entity for entity in entities if entity.unique_id.endswith("_night_light"))
     light = next(entity for entity in entities if entity.domain == "light")
+    mode = next(entity for entity in entities if entity.unique_id.endswith("_current_mode"))
+    fan = next(entity for entity in entities if entity.unique_id.endswith("_fan_level"))
+    temperature = next(
+        entity for entity in entities if entity.unique_id.endswith("_ai_target_temperature")
+    )
     channel_state = hass.states.get(channel.entity_id)
     assert channel_state is not None
     assert channel_state.state == "on"
     assert channel_state.attributes["healthy"] is False
     assert channel_state.attributes["state_stale"] is True
+    for panel_entity in (mode, night_light, fan, temperature):
+        state = hass.states.get(panel_entity.entity_id)
+        assert state is not None
+        assert state.state == STATE_UNAVAILABLE
 
-    entry.runtime_data.coordinator.async_apply_shadow_update(
-        LightShadowUpdate(is_on=True, confirmed=True, source="reported")
+    await _queue_shadow_update(
+        hass,
+        websocket,
+        {
+            "reported": {
+                "123456789": {
+                    "2": {"properties": {"1": False}},
+                    "3": {"properties": {"2": 0, "3": 36}},
+                    "6": {"properties": {"4": False, "5": 5}},
+                }
+            }
+        },
+        topic_suffix="get/accepted",
     )
-    await hass.async_block_till_done()
     light_state = hass.states.get(light.entity_id)
     assert light_state is not None
-    assert light_state.state == "on"
-    assert light_state.attributes["state_source"] == "reported"
+    assert light_state.state == "off"
+    assert light_state.attributes["state_source"] == "get_reported"
     assert light_state.attributes["state_stale"] is False
+    assert hass.states.get(mode.entity_id).state == "off"
+    assert hass.states.get(night_light.entity_id).state == "off"
+    assert hass.states.get(fan.entity_id).state == "5"
+    assert hass.states.get(temperature.entity_id).state == "36"
+    for service in ("start_probe", "sample_probe", "stop_probe"):
+        assert not hass.services.has_service(DOMAIN, service)
+
+    await _queue_shadow_update(
+        hass,
+        websocket,
+        {
+            "reported": {
+                "123456789": {
+                    "3": {"properties": {"3": 34}},
+                    "6": {"properties": {"4": True}},
+                }
+            }
+        },
+    )
+    assert hass.states.get(mode.entity_id).state == "off"
+    assert hass.states.get(night_light.entity_id).state == "on"
+    assert hass.states.get(fan.entity_id).state == "5"
+    assert hass.states.get(temperature.entity_id).state == "34"
+    assert control_calls == []
+
     confirmed_at = light_state.attributes["last_confirmed_at"]
     assert isinstance(confirmed_at, str)
     parsed_confirmed_at = datetime.fromisoformat(confirmed_at)
@@ -467,8 +537,8 @@ async def test_real_entry_manager_starts_and_stops_fake_wss_without_task_leak(
     stale_light_state = hass.states.get(light.entity_id)
     stale_channel_state = hass.states.get(channel.entity_id)
     assert stale_light_state is not None
-    assert stale_light_state.state == "on"
-    assert stale_light_state.attributes["state_source"] == "reported"
+    assert stale_light_state.state == "off"
+    assert stale_light_state.attributes["state_source"] == "get_reported"
     assert stale_light_state.attributes["state_stale"] is True
     assert stale_light_state.attributes["last_confirmed_at"] == confirmed_at
     assert stale_channel_state is not None
@@ -476,6 +546,8 @@ async def test_real_entry_manager_starts_and_stops_fake_wss_without_task_leak(
     assert stale_channel_state.attributes["healthy"] is False
     assert stale_channel_state.attributes["state_stale"] is True
     assert stale_channel_state.attributes["last_confirmed_at"] == confirmed_at
+    for panel_entity in (mode, night_light, fan, temperature):
+        assert hass.states.get(panel_entity.entity_id).state == STATE_UNAVAILABLE
 
     await _unload(hass, entry)
     unloaded_light_state = hass.states.get(light.entity_id)
@@ -493,11 +565,11 @@ async def test_real_entry_manager_starts_and_stops_fake_wss_without_task_leak(
     assert websocket.close_calls == 1
 
 
-async def test_real_entry_manager_wss_to_https_only_removes_state_channel(
+async def test_real_entry_manager_wss_to_https_only_removes_wss_entities(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Catch a real mode reload leaving the prior channel registry or state behind."""
+    """Catch a real mode reload leaving any WSS-only registry or state behind."""
     websocket = _FakeWebSocket()
     session = _FakeSession(websocket)
     sleep = _ControlledSleep()
@@ -542,10 +614,17 @@ async def test_real_entry_manager_wss_to_https_only_removes_state_channel(
     await _wait_until(lambda: sleep.delays == [30])
     registry = er.async_get(hass)
     entities = er.async_entries_for_config_entry(registry, entry.entry_id)
-    assert sorted(entity.domain for entity in entities) == ["binary_sensor", "light"]
-    channel = next(entity for entity in entities if entity.domain == "binary_sensor")
+    assert sorted(entity.domain for entity in entities) == [
+        "binary_sensor",
+        "binary_sensor",
+        "light",
+        "sensor",
+        "sensor",
+        "sensor",
+    ]
+    wss_only = [entity for entity in entities if entity.domain != "light"]
     light = next(entity for entity in entities if entity.domain == "light")
-    assert hass.states.get(channel.entity_id) is not None
+    assert all(hass.states.get(entity.entity_id) is not None for entity in wss_only)
     assert hass.states.get(light.entity_id) is not None
 
     https_only_data = dict(entry.data)
@@ -555,8 +634,9 @@ async def test_real_entry_manager_wss_to_https_only_removes_state_channel(
 
     remaining = er.async_entries_for_config_entry(registry, entry.entry_id)
     assert [entity.entity_id for entity in remaining] == [light.entity_id]
-    assert registry.async_get(channel.entity_id) is None
-    assert hass.states.get(channel.entity_id) is None
+    for entity in wss_only:
+        assert registry.async_get(entity.entity_id) is None
+        assert hass.states.get(entity.entity_id) is None
     assert registry.async_get(light.entity_id) is not None
     assert hass.states.get(light.entity_id) is not None
     running = {

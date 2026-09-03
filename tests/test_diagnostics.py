@@ -125,7 +125,7 @@ def test_diagnostics_build_only_the_allowed_scalar_whitelist(
     result = _run(async_get_config_entry_diagnostics(None, cast(Any, entry)))
 
     assert result == {
-        "integration_version": "0.2.4",
+        "integration_version": "0.3.0",
         "authentication_expiry_bucket": ">=7d",
         "wss_enabled": True,
         "wss_connected": True,
@@ -164,7 +164,7 @@ def test_unloaded_and_incomplete_runtime_keep_the_same_whitelist(
     ]
 
     expected = {
-        "integration_version": "0.2.4",
+        "integration_version": "0.3.0",
         "authentication_expiry_bucket": "unknown",
         "wss_enabled": False,
         "wss_connected": False,
@@ -219,7 +219,7 @@ def test_diagnostics_fold_secret_bearing_attribute_and_time_errors_to_defaults(
     ]
 
     expected = {
-        "integration_version": "0.2.4",
+        "integration_version": "0.3.0",
         "authentication_expiry_bucket": "unknown",
         "wss_enabled": False,
         "wss_connected": False,
