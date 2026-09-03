@@ -1254,53 +1254,48 @@ git commit -m "feat(状态映射): 添加只读面板实体"
 - Consumes: Tasks 1–3 已经不依赖 probe 的正式 parser、Coordinator 和实体。
 - Produces: 没有 HA domain services、没有 probe runtime、没有 correlated get/renewal；唯一网络读取仍是每次 WSS 建连后的空 `{}` Shadow `get`。
 
-- [ ] **Step 1: 把临时 public-contract 测试改成删除断言并确认 red**
+- [ ] **Step 1: 写入真实 HA Action 未注册测试并确认 red**
 
-用以下测试替换 `test_manifest.py::test_temporary_probe_public_contract_is_exact`：
+删除 `test_manifest.py::test_temporary_probe_public_contract_is_exact`，不要用源码文本或文件存在性
+断言替代它。把以下行为测试加入 `tests/ha_runtime/test_ha_runtime.py`：
 
 ```python
-def test_temporary_probe_surface_is_absent(project_root: Path) -> None:
-    component = project_root / "custom_components/aupu_q360"
-    strings = _load_json(component / "strings.json")
-    translation = _load_json(component / "translations/zh-Hans.json")
-    production_text = "\n".join(
-        path.read_text(encoding="utf-8") for path in sorted(component.glob("*.py"))
+async def test_real_entry_registers_no_temporary_probe_actions(
+    hass: HomeAssistant,
+) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="AUPU Q360",
+        unique_id="synthetic-no-probe-entry",
+        data=_entry_data(
+            token=_jwt(
+                expires_in=7 * 24 * 60 * 60,
+                subject="synthetic-no-probe",
+            )
+        ),
     )
-    readme = (project_root / "README.md").read_text(encoding="utf-8")
+    entry.add_to_hass(hass)
 
-    for relative_path in (
-        "custom_components/aupu_q360/probe.py",
-        "custom_components/aupu_q360/services.py",
-        "custom_components/aupu_q360/services.yaml",
-        "docs/q360-read-only-discovery-runbook.md",
-        "tests/test_probe.py",
-        "tests/test_probe_network_boundary.py",
-        "tests/test_services.py",
-    ):
-        assert not (project_root / relative_path).exists()
-    assert "services" not in strings
-    assert "exceptions" not in strings
-    assert _key_tree(translation) == _key_tree(strings)
-    for forbidden in (
-        "PanelStateProbe",
-        "start_probe",
-        "sample_probe",
-        "stop_probe",
-        "probe_available",
-        "async_prepare_probe_transport",
-        "async_request_shadow_get",
-        "client_token",
-    ):
-        assert forbidden not in production_text
-        assert forbidden not in readme
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    for service in ("start_probe", "sample_probe", "stop_probe"):
+        assert not hass.services.has_service(DOMAIN, service)
+    await _unload(hass, entry)
 ```
 
-同时把 `test_english_and_simplified_chinese_flow_keys_match()` 的顶层 key 集合改为
-`{"config", "options", "issues", "entity"}`，不再期待 `services` 或 `exceptions`。
+Run:
 
-Run: `uv run pytest -q tests/test_manifest.py::test_temporary_probe_surface_is_absent`
+```bash
+AUPU_RUN_HA_RUNTIME=1 uv run --group ha-test pytest \
+  tests/ha_runtime/test_ha_runtime.py::test_real_entry_registers_no_temporary_probe_actions \
+  -m ha_runtime -v
+```
 
-Expected: fails on the first still-present probe file.
+Expected: fails because the current runtime still registers all three probe Actions.
+
+实现删除时，把 `test_english_and_simplified_chinese_flow_keys_match()` 的顶层 key 集合改为
+`{"config", "options", "issues", "entity"}`，不再期待 `services` 或 `exceptions`。文件和符号删除
+只在 Step 8 的一次性交付门禁中核对，不保留源码 change-detector 单测。
 
 - [ ] **Step 2: 简化 Config Entry runtime 生命周期**
 
@@ -1357,28 +1352,25 @@ await websocket.send_bytes(
 )
 ```
 
-删除 `tests/test_wss.py` 中 renew/correlated-get 专项测试；现有握手测试继续断言第 4 个 MQTT packet
-是 topic `shadow/get`、payload `b"{}"`。增加 AST 或 source test，断言 `wss.py` 不含
-`clientToken`、`disc-` 或额外 publish API：
+删除 `tests/test_wss.py` 中 renew/correlated-get 专项测试；增强现有真实握手测试，用实际发送的
+MQTT packets 证明第 4 个 packet 是唯一 PUBLISH，且 topic 为 `shadow/get`、payload 为 `b"{}"`：
 
 ```python
-def test_wss_has_only_the_initial_empty_shadow_get_publish(project_root: Path) -> None:
-    source = (project_root / "custom_components/aupu_q360/wss.py").read_text(
-        encoding="utf-8"
-    )
-    tree = ast.parse(source)
-    publishes = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "encode_publish"
-    ]
-
-    assert len(publishes) == 1
-    assert "clientToken" not in source
-    assert "disc-" not in source
-    assert "async_request_shadow_get" not in source
+packets = [decode_packets(raw)[0] for raw in websocket.sent[:4]]
+assert [packet.packet_type for packet in packets] == [
+    PacketType.CONNECT,
+    PacketType.SUBSCRIBE,
+    PacketType.SUBSCRIBE,
+    PacketType.PUBLISH,
+]
+publishes = [
+    packet for packet in packets if packet.packet_type is PacketType.PUBLISH
+]
+assert len(publishes) == 1
+assert publishes[0].topic == (
+    "$aws/things/123456789/shadow/get"
+)
+assert publishes[0].payload == b"{}"
 ```
 
 - [ ] **Step 5: 删除 AcceptedShadow correlation 字段**
