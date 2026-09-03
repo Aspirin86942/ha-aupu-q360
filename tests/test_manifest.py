@@ -300,7 +300,7 @@ def test_discovery_actions_have_fixed_ui_schemas_and_translations(project_root: 
     assert not re.search(r"\b[0-9]{9,}\b", json.dumps(services))
 
 
-def test_v2_discovery_docs_match_the_read_only_operator_contract(project_root: Path) -> None:
+def test_v2_discovery_docs_match_the_remote_operator_contract(project_root: Path) -> None:
     """Catch versioned operator docs regaining v1 actions or unsafe deployment shortcuts."""
     readme = (project_root / "README.md").read_text(encoding="utf-8")
     runbook = (project_root / "docs/q360-read-only-discovery-runbook.md").read_text(
@@ -314,6 +314,37 @@ def test_v2_discovery_docs_match_the_read_only_operator_contract(project_root: P
         "finish_discovery",
         "cancel_discovery",
     }
+
+    for document in (readme, runbook):
+        for required_remote_copy in (
+            "操作者控制面",
+            "奥普官方 App",
+            "官方微信小程序",
+            "只有目标设备 Shadow `reported`",
+        ):
+            assert required_remote_copy in document
+
+    assert "操作者位于实体面板旁" not in runbook
+    assert "操作者在实体面板上完成" not in runbook
+
+    compact_runbook = re.sub(r"\s+", "", runbook)
+    for required_remote_boundary in (
+        "连续 45–60 分钟",
+        "浴室无人、无宠物",
+        "可能控制 Q360 的自动化已暂停",
+        "手机、电脑 HA 和聊天在线",
+        "官方控制面显示只用于核对人工操作，不能作为字段证据",
+        "discovery_restore_required",
+        "远程会话不得利用同阶段重试能力",
+        "无论官方控制面显示什么",
+        "家中人员现场确认",
+        "当前载体仍开启时，先恢复原档位或原温度，再关闭全部模式",
+        "恢复需要重新开启模式时，不再远程尝试，由现场人员接管",
+        "重新取得真实设备实验授权",
+    ):
+        assert re.sub(r"\s+", "", required_remote_boundary) in compact_runbook
+
+    assert "在官方控制面关闭七个模式，恢复原始全局档位" not in runbook
 
     assert set(services) == expected_services
     for document in (readme, runbook):
@@ -359,7 +390,7 @@ def test_v2_discovery_docs_match_the_read_only_operator_contract(project_root: P
         "修改 Compose",
         "同步组件",
         "重建或重启 Home Assistant 容器",
-        "执行真实面板会话",
+        "执行真实远程会话",
         "Base64 只是编码，不是脱敏",
         "删除 Config Entry 不会删除宿主机档案",
     ):
