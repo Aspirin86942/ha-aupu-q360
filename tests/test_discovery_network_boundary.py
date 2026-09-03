@@ -283,7 +283,11 @@ async def test_complete_session_publishes_only_correlated_shadow_gets(
     async def save_report(report: JsonObject) -> None:
         reports.append(report)
 
+    async def prepare_transport() -> None:
+        return None
+
     session = PanelStateDiscoverySession(
+        prepare_transport=prepare_transport,
         request_shadow_get=coordinator.async_request_shadow_get,
         save_report=save_report,
         sanitizer_factory=lambda key: DiscoverySanitizer(

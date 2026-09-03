@@ -524,6 +524,91 @@ def test_discovery_get_recorder_reaches_the_existing_wss_connection() -> None:
     assert recorded == [RawShadowEvent("outgoing", "synthetic-topic", b"synthetic")]
 
 
+def test_prepare_discovery_renews_healthy_transport_without_erasing_light() -> None:
+    """Catch discovery transport renewal skipping health or clearing confirmed state."""
+    coordinator = _coordinator(FakeApi())
+    confirmed_at = datetime(2026, 9, 3, 1, 2, 3, tzinfo=UTC)
+    coordinator._now = lambda: confirmed_at
+    coordinator.async_apply_light_state(is_on=True, source="reported")
+
+    class FakeWss:
+        def __init__(self) -> None:
+            self.renew_timeouts: list[float] = []
+
+        async def async_renew_and_wait_healthy(self, timeout_seconds: float) -> None:
+            self.renew_timeouts.append(timeout_seconds)
+            coordinator.async_apply_wss_connection(False, False)
+            assert coordinator.is_on is True
+            assert coordinator.last_confirmed_at == confirmed_at
+            coordinator.async_apply_wss_connection(True, True)
+
+    transport = FakeWss()
+    coordinator._wss = cast(Any, transport)
+
+    _run(coordinator.async_prepare_discovery_transport())
+
+    assert transport.renew_timeouts == [45.0]
+    assert coordinator.wss_connected is True
+    assert coordinator.wss_healthy is True
+    assert coordinator.is_on is True
+    assert coordinator.last_confirmed_at == confirmed_at
+
+
+def test_prepare_discovery_rejects_invalid_runtime_states_before_renewal() -> None:
+    """Catch discovery renewing a stopped, reauthing, or incomplete WSS runtime."""
+
+    class FakeWss:
+        def __init__(self) -> None:
+            self.renew_calls = 0
+
+        async def async_renew_and_wait_healthy(self, timeout_seconds: float) -> None:
+            del timeout_seconds
+            self.renew_calls += 1
+
+    cases: list[AupuCoordinator] = []
+
+    stopped = _coordinator(FakeApi())
+    stopped._stopped = True
+    cases.append(stopped)
+
+    reauth = _coordinator(FakeApi())
+    reauth.async_handle_wss_auth_failure()
+    cases.append(reauth)
+
+    cases.append(_coordinator(FakeApi()))
+
+    missing_user_uuid = _coordinator(FakeApi())
+    missing_user_uuid._wss_missing_user_uuid = True
+    cases.append(missing_user_uuid)
+
+    transports: list[FakeWss] = []
+    for coordinator in (stopped, reauth, missing_user_uuid):
+        transport = FakeWss()
+        coordinator._wss = cast(Any, transport)
+        transports.append(transport)
+
+    for coordinator in cases:
+        with pytest.raises(HomeAssistantError, match="discovery_wss_unavailable"):
+            _run(coordinator.async_prepare_discovery_transport())
+
+    assert [transport.renew_calls for transport in transports] == [0, 0, 0]
+
+
+def test_prepare_discovery_rejects_transport_without_post_renew_health() -> None:
+    """Catch a renewal return being trusted without connected and healthy callbacks."""
+    coordinator = _coordinator(FakeApi())
+
+    class FakeWss:
+        async def async_renew_and_wait_healthy(self, timeout_seconds: float) -> None:
+            assert timeout_seconds == 45.0
+            coordinator.async_apply_wss_connection(True, False)
+
+    coordinator._wss = cast(Any, FakeWss())
+
+    with pytest.raises(HomeAssistantError, match="discovery_wss_unavailable"):
+        _run(coordinator.async_prepare_discovery_transport())
+
+
 @pytest.mark.parametrize(
     ("offset", "created_id", "severity", "persistent", "raises_auth"),
     [

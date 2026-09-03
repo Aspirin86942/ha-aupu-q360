@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -185,6 +186,20 @@ class AupuCoordinator:
             await self._wss.async_request_shadow_get(client_token, record_outgoing)
         except (AupuError, aiohttp.ClientError, RuntimeError, TimeoutError):
             raise HomeAssistantError("discovery_wss_unavailable") from None
+
+    async def async_prepare_discovery_transport(self) -> None:
+        """Renew WSS and require one healthy connection before discovery starts."""
+        wss = self._wss
+        if self._stopped or self._reauth_requested or wss is None or self._wss_missing_user_uuid:
+            raise HomeAssistantError("discovery_wss_unavailable")
+        try:
+            await wss.async_renew_and_wait_healthy(timeout_seconds=45.0)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - keep transport details inside the boundary
+            raise HomeAssistantError("discovery_wss_unavailable") from None
+        if not self._wss_connected or not self._wss_healthy:
+            raise HomeAssistantError("discovery_wss_unavailable")
 
     async def async_set_light(self, is_on: bool) -> None:
         """Send exactly one control call after enforcing the local auth gate."""

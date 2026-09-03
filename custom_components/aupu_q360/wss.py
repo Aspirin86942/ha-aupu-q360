@@ -71,8 +71,11 @@ class AupuShadowWebSocket:
         self._clock_ms = clock_ms or _unix_milliseconds
         self._sleep = sleep
         self._runner_task: asyncio.Task[None] | None = None
+        self._runner_generation = 0
+        self._healthy = asyncio.Event()
         self._ready_in_attempt = False
         self._active_websocket: aiohttp.ClientWebSocketResponse | None = None
+        self._lifecycle_lock = asyncio.Lock()
         self._send_lock = asyncio.Lock()
 
     @property
@@ -82,20 +85,46 @@ class AupuShadowWebSocket:
 
     async def async_start(self) -> None:
         """Start at most one runner; incomplete WSS opt-in performs no network work."""
+        async with self._lifecycle_lock:
+            self._async_start_runner()
+
+    def _async_start_runner(self) -> asyncio.Event | None:
+        """Start the sole runner and return its generation-scoped health event."""
         if self._user_uuid is None or self.is_running:
-            return
-        task = asyncio.create_task(self._run(), name="aupu_q360_wss")
+            return self._healthy if self.is_running else None
+        self._runner_generation += 1
+        generation = self._runner_generation
+        self._healthy = asyncio.Event()
+        task = asyncio.create_task(self._run(generation), name="aupu_q360_wss")
         self._runner_task = task
         task.add_done_callback(self._runner_done)
+        return self._healthy
 
     async def async_stop(self) -> None:
         """Cancel and await all WSS-owned work while preserving caller cancellation."""
+        async with self._lifecycle_lock:
+            await self._async_stop_runner()
+
+    async def _async_stop_runner(
+        self,
+        *,
+        finish_cleanup_on_cancellation: bool = False,
+    ) -> None:
+        """Cancel and await the current runner while the lifecycle lock is held."""
         task = self._runner_task
         if task is None:
             return
         task.cancel()
         try:
-            await task
+            if finish_cleanup_on_cancellation:
+                waiter = asyncio.gather(task, return_exceptions=True)
+                try:
+                    await asyncio.shield(waiter)
+                except asyncio.CancelledError:
+                    await waiter
+                    raise
+            else:
+                await task
         except asyncio.CancelledError:
             current = asyncio.current_task()
             if current is not None and current.cancelling() > 0:
@@ -103,6 +132,22 @@ class AupuShadowWebSocket:
         finally:
             if self._runner_task is task:
                 self._runner_task = None
+
+    async def async_renew_and_wait_healthy(self, timeout_seconds: float = 45.0) -> None:
+        """Replace the runner and wait for its first successful PINGRESP."""
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
+        async with self._lifecycle_lock:
+            await self._async_stop_runner(finish_cleanup_on_cancellation=True)
+            healthy = self._async_start_runner()
+            if healthy is None:
+                raise AupuProtocolError
+            try:
+                async with asyncio.timeout(timeout_seconds):
+                    await healthy.wait()
+            except asyncio.CancelledError:
+                await self._async_stop_runner(finish_cleanup_on_cancellation=True)
+                raise
 
     async def async_request_shadow_get(
         self,
@@ -137,12 +182,12 @@ class AupuShadowWebSocket:
         if self._runner_task is task:
             self._runner_task = None
 
-    async def _run(self) -> None:
+    async def _run(self, generation: int) -> None:
         retry_index = 0
         while True:
             self._ready_in_attempt = False
             try:
-                await self._connect_once()
+                await self._connect_once(generation)
             except asyncio.CancelledError:
                 raise
             except AupuAuthError:
@@ -161,7 +206,7 @@ class AupuShadowWebSocket:
             retry_index += 1
             await self._sleep(delay)
 
-    async def _connect_once(self) -> None:
+    async def _connect_once(self, generation: int) -> None:
         credentials = await self._api.get_wss_credentials()
         raw_token = self._credential.authorization_header.removeprefix("Bearer ")
         client_id = f"{self._user_uuid}-{raw_token[-8:]}-{self._clock_ms()}"
@@ -219,12 +264,12 @@ class AupuShadowWebSocket:
                 )
             )
             self._active_websocket = websocket
-            self._async_connection_changed(True, False)
+            self._notify_connection_changed(generation, True, False)
             ping_task = asyncio.create_task(
-                self._ping_loop(websocket, ping), name="aupu_q360_wss_ping"
+                self._ping_loop(websocket, ping, generation), name="aupu_q360_wss_ping"
             )
             receive_task = asyncio.create_task(
-                self._receive_loop(websocket, decoder, pending, ping),
+                self._receive_loop(websocket, decoder, pending, ping, generation),
                 name="aupu_q360_wss_receive",
             )
             session_tasks = {ping_task, receive_task}
@@ -253,17 +298,33 @@ class AupuShadowWebSocket:
                 await websocket.close()
             except (aiohttp.ClientError, RuntimeError):
                 pass
-            self._async_connection_changed(False, False)
+            self._notify_connection_changed(generation, False, False)
+
+    def _notify_connection_changed(
+        self,
+        generation: int,
+        connected: bool,
+        healthy: bool,
+    ) -> None:
+        """Publish connection state and signal health only for the current runner."""
+        if generation != self._runner_generation:
+            return
+        if connected and healthy:
+            self._healthy.set()
+        elif not connected:
+            self._healthy.clear()
+        self._async_connection_changed(connected, healthy)
 
     async def _ping_loop(
         self,
         websocket: aiohttp.ClientWebSocketResponse,
         ping: _PingTracker,
+        generation: int,
     ) -> None:
         while True:
             await self._sleep(_KEEP_ALIVE_SECONDS)
             ping.start()
-            self._async_connection_changed(True, False)
+            self._notify_connection_changed(generation, True, False)
             async with self._send_lock:
                 await websocket.send_bytes(encode_pingreq())
             await self._wait_for_pingresp(ping)
@@ -292,13 +353,14 @@ class AupuShadowWebSocket:
         decoder: MqttPacketDecoder,
         pending: deque[MqttPacket],
         ping: _PingTracker,
+        generation: int,
     ) -> None:
         while True:
             packet = await _receive_packet(websocket, decoder, pending)
             if packet.packet_type is PacketType.PINGRESP:
                 if not ping.complete():
                     raise AupuProtocolError
-                self._async_connection_changed(True, True)
+                self._notify_connection_changed(generation, True, True)
                 continue
             if packet.packet_type is not PacketType.PUBLISH or packet.topic is None:
                 raise AupuProtocolError

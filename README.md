@@ -71,9 +71,10 @@ Repair，控制会在凭据失效时停止。`jwt_expiring` 只是提前告警�
 
 启用且连接 WSS 后，可通过五个 `aupu_q360` Action 执行一次性的 v2 只读字段发现：
 `start_discovery`、`begin_discovery_step`、`advance_discovery_step`、`finish_discovery` 和
-`cancel_discovery`。发现复用现有 WSS 连接且只发送相关联的 Shadow `get`；Home Assistant 不会
-开启、关闭或设置面板模式、档位与温度。只有目标设备 Shadow `reported` 是确认状态，
-`desired`、操作阶段和用户陈述都不会被当作成功证据。
+`cancel_discovery`。start 会先续建 WSS，并在确认新连接 healthy 后才建立发现基线；续建最多
+等待 45 秒，之后发现仍只发送相关联的 Shadow `get`。Home Assistant 不会开启、关闭或设置面板
+模式、档位与温度。只有目标设备 Shadow `reported` 是确认状态，`desired`、操作阶段和用户陈述
+都不会被当作成功证据。
 
 固定实验目录包含十个标签：
 
@@ -88,6 +89,8 @@ Repair，控制会在凭据失效时停止。`jwt_expiring` 只是提前告警�
 实体面板、奥普官方 App 或官方微信小程序。手机远程实验每次操作后先刷新控制面，再等待
 15–30 秒并用 advance 取得下一阶段快照。模式、档位目标和温度实验各做两轮，并在每轮内人工
 恢复原状态。官方控制面显示只用于核对人工操作，只有目标设备 Shadow `reported` 才是字段证据。
+每个等待操作者的阶段最多 300 秒，完整发现会话最多 3,300 秒；旧 v2 报告中的 120/3,600 超时 profile 只用于读取兼容，
+不是当前运行时限。
 
 远程实验必须预先保证浴室无人、无宠物、设备无遮挡，暂停可能控制 Q360 的自动化，并安排家中
 人员保持可联系。取消只清理本次软件会话，不会发恢复命令，也不会覆盖上一次成功报告；异常或

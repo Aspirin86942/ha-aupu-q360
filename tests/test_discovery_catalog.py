@@ -319,6 +319,7 @@ def test_controlled_enum_and_prompt_values_match_the_v2_contract() -> None:
     """Catch report coverage or operator prompt values drifting from the fixed API."""
     assert tuple(item.value for item in DiscoveryState) == (
         "idle",
+        "transport_preparing",
         "archive_opening",
         "session_baselining",
         "ready",

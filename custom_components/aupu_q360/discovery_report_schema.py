@@ -53,14 +53,14 @@ _TOP_LEVEL_KEYS = {
     "statistics",
     "sanitization_scan",
 }
-_LIMITS = {
+_INVARIANT_LIMITS = {
     "snapshot_timeout_seconds": 10,
-    "stage_timeout_seconds": 120,
-    "session_timeout_seconds": 3600,
     "max_changes_per_phase": 256,
     "mqtt_packet_bytes": 65_536,
     "raw_archive_bytes": 64 * 1024 * 1024,
 }
+_TIMEOUT_PROFILES = frozenset({(120, 3600), (300, 3300)})
+_LIMIT_KEYS = {*_INVARIANT_LIMITS, "stage_timeout_seconds", "session_timeout_seconds"}
 _VALUE_KINDS = frozenset({"boolean", "number", "null", "string", "timestamp", "object", "array"})
 _DIRECTIONS = frozenset(
     {"added", "removed", "increase", "decrease", "off_to_on", "on_to_off", "changed"}
@@ -140,10 +140,22 @@ def _validate_report(value: JsonValue) -> None:
     cycles = _validate_cycles(value["cycles"])
     _validate_coverage(value["coverage"], cycles)
     _validate_candidates(value["candidates"], cycles)
-    if value["limits"] != _LIMITS:
-        raise DiscoverySanitizationError
+    _validate_limits(value["limits"])
     _validate_statistics(value["statistics"], cycles)
     if value["sanitization_scan"] != {"passed": True, "finding_count": 0}:
+        raise DiscoverySanitizationError
+
+
+def _validate_limits(value: JsonValue) -> None:
+    if not isinstance(value, dict) or set(value) != _LIMIT_KEYS:
+        raise DiscoverySanitizationError
+    if any(value[key] != expected for key, expected in _INVARIANT_LIMITS.items()):
+        raise DiscoverySanitizationError
+    timeout_profile = (
+        value["stage_timeout_seconds"],
+        value["session_timeout_seconds"],
+    )
+    if timeout_profile not in _TIMEOUT_PROFILES:
         raise DiscoverySanitizationError
 
 

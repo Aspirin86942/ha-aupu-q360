@@ -6,6 +6,8 @@ import socket
 
 import pytest
 
+pytestmark = pytest.mark.enable_socket
+
 
 def test_blocks_dns_lookup_before_resolving_localhost() -> None:
     """An unmocked DNS lookup must fail before localhost resolution starts."""

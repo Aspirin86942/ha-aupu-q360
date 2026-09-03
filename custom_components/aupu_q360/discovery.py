@@ -59,10 +59,11 @@ type Observer = Callable[[AcceptedShadow], None]
 type CancelCallback = Callable[[], None]
 type ObserverActivator = Callable[[Observer, CancelCallback], None]
 type Clock = Callable[[], datetime]
+type TransportPreparer = Callable[[], Awaitable[None]]
 
 _DEFAULT_SNAPSHOT_TIMEOUT = 10.0
-_DEFAULT_STAGE_TIMEOUT = 120.0
-_DEFAULT_SESSION_TIMEOUT = 3600.0
+_DEFAULT_STAGE_TIMEOUT = 300.0
+_DEFAULT_SESSION_TIMEOUT = 3300.0
 _DEFAULT_MAX_CHANGES = 256
 _LOGGER = logging.getLogger(__name__)
 
@@ -116,6 +117,7 @@ class PanelStateDiscoverySession:
     def __init__(
         self,
         *,
+        prepare_transport: TransportPreparer,
         request_shadow_get: SnapshotRequester,
         save_report: ReportSaver,
         sanitizer_factory: SanitizerFactory,
@@ -131,6 +133,7 @@ class PanelStateDiscoverySession:
         session_timeout_seconds: float = _DEFAULT_SESSION_TIMEOUT,
         max_changes_per_phase: int = _DEFAULT_MAX_CHANGES,
     ) -> None:
+        self._prepare_transport = prepare_transport
         self._request_shadow_get = request_shadow_get
         self._save_report = save_report
         self._sanitizer_factory = sanitizer_factory
@@ -214,20 +217,22 @@ class PanelStateDiscoverySession:
             raise DiscoveryBusyError
         if all_modes_off_confirmed is not True:
             raise DiscoveryInvalidParameterError
-        if not self._discovery_available():
-            self._last_failure_code = DiscoveryWssUnavailableError.error_code
-            raise DiscoveryWssUnavailableError
-
         self._last_failure_code = "none"
         self._last_manual_restore_required = False
-        self._state = DiscoveryState.ARCHIVE_OPENING
-        self._session_key = secrets.token_bytes(32)
+        self._state = DiscoveryState.TRANSPORT_PREPARING
         try:
+            try:
+                await self._prepare_transport()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - hide transport dependency details
+                raise DiscoveryWssUnavailableError from None
+            if not self._discovery_available():
+                raise DiscoveryWssUnavailableError
+
+            self._state = DiscoveryState.ARCHIVE_OPENING
+            self._session_key = secrets.token_bytes(32)
             self._sanitizer = self._sanitizer_factory(self._session_key)
-            started_at = self._now()
-            if started_at.tzinfo is None or started_at.utcoffset() is None:
-                raise DiscoveryInvalidPayloadError
-            self._started_at = started_at.astimezone(UTC)
             if self._archive_factory is not None:
                 self._archive = await self._archive_factory(self.cancel_from_transport)
                 self._archive_metadata = self._archive.metadata
@@ -237,6 +242,10 @@ class PanelStateDiscoverySession:
                 lambda: self.cancel_from_transport(DiscoveryWssUnavailableError.error_code),
             )
             self._observer_active = True
+            started_at = self._now()
+            if started_at.tzinfo is None or started_at.utcoffset() is None:
+                raise DiscoveryInvalidPayloadError
+            self._started_at = started_at.astimezone(UTC)
             self._session_timer = self._create_expiry_task(
                 self._session_timeout_seconds,
                 DiscoverySessionExpiredError.error_code,

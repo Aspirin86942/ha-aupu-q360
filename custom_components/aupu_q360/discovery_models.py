@@ -33,6 +33,7 @@ class DiscoveryState(StrEnum):
     """Internal state machine states that never contain user input."""
 
     IDLE = "idle"
+    TRANSPORT_PREPARING = "transport_preparing"
     ARCHIVE_OPENING = "archive_opening"
     SESSION_BASELINING = "session_baselining"
     READY = "ready"

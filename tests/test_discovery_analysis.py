@@ -571,8 +571,8 @@ def test_report_has_exact_v2_top_level_limits_statistics_and_deterministic_order
     }
     assert report["limits"] == {
         "snapshot_timeout_seconds": 10,
-        "stage_timeout_seconds": 120,
-        "session_timeout_seconds": 3600,
+        "stage_timeout_seconds": 300,
+        "session_timeout_seconds": 3300,
         "max_changes_per_phase": 256,
         "mqtt_packet_bytes": 65_536,
         "raw_archive_bytes": 64 * 1024 * 1024,
@@ -586,6 +586,28 @@ def test_report_has_exact_v2_top_level_limits_statistics_and_deterministic_order
     assert report["sanitization_scan"] == {"passed": True, "finding_count": 0}
     assert report == _report(tuple(reversed(cycles)), archive=archive)
     assert validate_discovery_report(report, forbidden_values=()).passed is True
+
+
+def test_schema_accepts_complete_timeout_profiles_and_rejects_mixed_pairs() -> None:
+    """Catch legacy reports being lost or partial timeout relaxation being accepted."""
+    current = _report()
+    current["limits"].update({"stage_timeout_seconds": 300, "session_timeout_seconds": 3300})
+    assert validate_discovery_report(current, forbidden_values=()).passed is True
+
+    legacy = copy.deepcopy(current)
+    legacy["limits"].update({"stage_timeout_seconds": 120, "session_timeout_seconds": 3600})
+    assert validate_discovery_report(legacy, forbidden_values=()).passed is True
+
+    for stage_timeout, session_timeout in ((120, 3300), (300, 3600)):
+        mixed = copy.deepcopy(current)
+        mixed["limits"].update(
+            {
+                "stage_timeout_seconds": stage_timeout,
+                "session_timeout_seconds": session_timeout,
+            }
+        )
+        with pytest.raises(DiscoverySanitizationError):
+            validate_discovery_report(mixed, forbidden_values=())
 
 
 @pytest.mark.parametrize(

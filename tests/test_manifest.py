@@ -13,7 +13,7 @@ import yaml
 
 DOMAIN = "aupu_q360"
 NAME = "AUPU Q360"
-VERSION = "0.2.1"
+VERSION = "0.2.2"
 REPOSITORY_URL = "https://github.com/Aspirin86942/ha-aupu-q360"
 
 
@@ -321,8 +321,14 @@ def test_v2_discovery_docs_match_the_remote_operator_contract(project_root: Path
             "奥普官方 App",
             "官方微信小程序",
             "只有目标设备 Shadow `reported`",
+            "start 会先续建 WSS，并在确认新连接 healthy 后才建立发现基线",
+            "每个等待操作者的阶段最多 300 秒",
+            "完整发现会话最多 3,300 秒",
+            "旧 v2 报告中的 120/3,600 超时 profile 只用于读取兼容",
         ):
             assert required_remote_copy in document
+        assert "120 秒阶段期限" not in document
+        assert "整个发现会话：3,600 秒" not in document
 
     assert "操作者位于实体面板旁" not in runbook
     assert "操作者在实体面板上完成" not in runbook

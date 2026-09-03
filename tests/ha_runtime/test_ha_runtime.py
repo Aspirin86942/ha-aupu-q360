@@ -83,6 +83,7 @@ class _FakeWebSocket:
         self.messages: asyncio.Queue[_FakeMessage] = asyncio.Queue()
         self.receive_started = asyncio.Event()
         self.close_calls = 0
+        self.closed = False
         for packet in (
             b"\x20\x02\x00\x00",
             b"\x90\x03\x00\x01\x00",
@@ -99,6 +100,7 @@ class _FakeWebSocket:
 
     async def close(self) -> None:
         self.close_calls += 1
+        self.closed = True
 
     def queue_binary(self, data: bytes) -> None:
         self.messages.put_nowait(_FakeMessage(aiohttp.WSMsgType.BINARY, data))
@@ -107,8 +109,8 @@ class _FakeWebSocket:
 class _FakeSession:
     """Keep the real WSS client on an in-memory aiohttp boundary."""
 
-    def __init__(self, websocket: _FakeWebSocket) -> None:
-        self.websocket = websocket
+    def __init__(self, websocket: _FakeWebSocket | list[_FakeWebSocket]) -> None:
+        self.websockets = list(websocket) if isinstance(websocket, list) else [websocket]
         self.calls: list[tuple[str, dict[str, str], tuple[str, ...]]] = []
 
     async def ws_connect(
@@ -119,7 +121,9 @@ class _FakeSession:
         protocols: tuple[str, ...],
     ) -> _FakeWebSocket:
         self.calls.append((url, dict(params), protocols))
-        return self.websocket
+        if len(self.websockets) > 1:
+            return self.websockets.pop(0)
+        return self.websockets[0]
 
 
 class _ControlledSleep:
@@ -127,10 +131,22 @@ class _ControlledSleep:
 
     def __init__(self) -> None:
         self.delays: list[float] = []
+        self.waiters: asyncio.Queue[asyncio.Future[None]] = asyncio.Queue()
 
     async def __call__(self, delay: float) -> None:
         self.delays.append(delay)
-        await asyncio.Event().wait()
+        waiter = asyncio.get_running_loop().create_future()
+        self.waiters.put_nowait(waiter)
+        await waiter
+
+    async def release_next(self) -> None:
+        while True:
+            waiter = await self.waiters.get()
+            if waiter.done():
+                continue
+            waiter.set_result(None)
+            await asyncio.sleep(0)
+            return
 
 
 async def _wait_until(predicate: Callable[[], bool]) -> None:
@@ -551,8 +567,10 @@ async def test_real_services_complete_sanitized_discovery_and_remove_private_sto
     tmp_path: Path,
 ) -> None:
     """Run the complete v2 matrix through real services, archive, Store, and reload."""
+    initial_websocket = _FakeWebSocket()
     websocket = _FakeWebSocket()
-    session = _FakeSession(websocket)
+    reload_websocket = _FakeWebSocket()
+    session = _FakeSession([initial_websocket, websocket, reload_websocket])
     sleep = _ControlledSleep()
     original_init = AupuShadowWebSocket.__init__
     archive_root = tmp_path / "private-archive"
@@ -560,6 +578,7 @@ async def test_real_services_complete_sanitized_discovery_and_remove_private_sto
     archive_root.chmod(0o700)
     original_archive_open = RawDiscoveryArchive.async_open.__func__
     control_calls: list[bool] = []
+    credential_calls = 0
 
     def init_with_fake_sleep(
         client: AupuShadowWebSocket,
@@ -571,9 +590,11 @@ async def test_real_services_complete_sanitized_discovery_and_remove_private_sto
 
     async def fake_get_wss_credentials(self: AupuApiClient) -> WssCredentials:
         del self
+        nonlocal credential_calls
+        credential_calls += 1
         return WssCredentials(
             authorizer_name="synthetic-authorizer",
-            signature="synthetic-signature-1",
+            signature=f"synthetic-signature-{credential_calls}",
             token_key_name="synthetic-token-key",
         )
 
@@ -618,7 +639,7 @@ async def test_real_services_complete_sanitized_discovery_and_remove_private_sto
     tasks_before = {task for task in asyncio.all_tasks() if task is not current}
 
     assert await hass.config_entries.async_setup(entry.entry_id)
-    await websocket.receive_started.wait()
+    await initial_websocket.receive_started.wait()
     await _wait_until(lambda: sleep.delays == [30])
     for service in (
         START_DISCOVERY,
@@ -631,13 +652,47 @@ async def test_real_services_complete_sanitized_discovery_and_remove_private_sto
 
     base = {"config_entry_id": entry.entry_id}
     baseline = _shadow_state()
-    start_response = await _call_discovery_snapshot_action(
-        hass,
-        websocket,
-        START_DISCOVERY,
-        {**base, "all_modes_off_confirmed": True},
-        baseline,
+    start_task = asyncio.create_task(
+        hass.services.async_call(
+            DOMAIN,
+            START_DISCOVERY,
+            {**base, "all_modes_off_confirmed": True},
+            blocking=True,
+            return_response=True,
+        )
     )
+    await _wait_until(lambda: len(session.calls) == 2)
+    await _wait_until(lambda: len(websocket.sent) == 4)
+    assert initial_websocket.sent[-1] == b"\xe0\x00"
+    assert initial_websocket.close_calls == 1
+    assert initial_websocket.closed is True
+    assert credential_calls == 2
+    assert start_task.done() is False
+    assert all(
+        json.loads(packet.payload).get("clientToken") is None
+        for raw in websocket.sent
+        if (packet := decode_packets(raw)[0]).packet_type.name == "PUBLISH"
+    )
+
+    await sleep.release_next()
+    await _wait_until(lambda: websocket.sent[-1] == b"\xc0\x00")
+    websocket.queue_binary(b"\xd0\x00")
+    await asyncio.sleep(0.01)
+    await _wait_until(lambda: len(websocket.sent) == 6)
+    request_packet = decode_packets(websocket.sent[-1])[0]
+    request = json.loads(request_packet.payload)
+    client_token = request["clientToken"]
+    websocket.queue_binary(
+        encode_publish(
+            "$aws/things/123456789/shadow/get/accepted",
+            json.dumps(
+                {"clientToken": client_token, "state": baseline},
+                separators=(",", ":"),
+            ).encode(),
+        )
+    )
+    start_response = await start_task
+    assert isinstance(start_response, dict)
     assert start_response == {
         "state": "ready",
         "message_code": "discovery_ready_for_step",
@@ -838,15 +893,9 @@ async def test_real_services_complete_sanitized_discovery_and_remove_private_sto
     ):
         assert not hass.services.has_service(DOMAIN, service)
 
-    for packet in (
-        b"\x20\x02\x00\x00",
-        b"\x90\x03\x00\x01\x00",
-        b"\x90\x03\x00\x02\x00",
-    ):
-        websocket.queue_binary(packet)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await _wait_until(lambda: entry.runtime_data.coordinator.discovery_available)
-    assert len(session.calls) == 2
+    assert len(session.calls) == 3
     reloaded_diagnostics = await async_get_config_entry_diagnostics(hass, entry)
     assert reloaded_diagnostics["state_discovery"]["report"] == report
     assert len(tuple(archive_root.iterdir())) == 1
@@ -883,9 +932,10 @@ async def test_real_archive_mount_failure_precedes_discovery_network_and_control
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Catch an unavailable private mount degrading into unarchived discovery."""
+    """Catch an unavailable private mount sending a correlated get or device control."""
+    initial_websocket = _FakeWebSocket()
     websocket = _FakeWebSocket()
-    session = _FakeSession(websocket)
+    session = _FakeSession([initial_websocket, websocket])
     sleep = _ControlledSleep()
     original_init = AupuShadowWebSocket.__init__
     original_archive_open = RawDiscoveryArchive.async_open.__func__
@@ -948,9 +998,8 @@ async def test_real_archive_mount_failure_precedes_discovery_network_and_control
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     await _wait_until(lambda: entry.runtime_data.coordinator.discovery_available)
-    sent_before = tuple(websocket.sent)
-    with pytest.raises(ServiceValidationError) as raised:
-        await hass.services.async_call(
+    start_task = asyncio.create_task(
+        hass.services.async_call(
             DOMAIN,
             START_DISCOVERY,
             {
@@ -960,9 +1009,23 @@ async def test_real_archive_mount_failure_precedes_discovery_network_and_control
             blocking=True,
             return_response=True,
         )
+    )
+    await _wait_until(lambda: len(session.calls) == 2)
+    await _wait_until(lambda: len(websocket.sent) == 4)
+    await sleep.release_next()
+    await _wait_until(lambda: websocket.sent[-1] == b"\xc0\x00")
+    websocket.queue_binary(b"\xd0\x00")
+
+    with pytest.raises(ServiceValidationError) as raised:
+        await start_task
 
     assert raised.value.translation_key == DiscoveryRawArchiveUnavailableError.error_code
-    assert tuple(websocket.sent) == sent_before
+    assert initial_websocket.close_calls == 1
+    assert not any(
+        json.loads(packet.payload).get("clientToken")
+        for raw in websocket.sent
+        if (packet := decode_packets(raw)[0]).packet_type.name == "PUBLISH"
+    )
     assert entry.runtime_data.discovery_session.state.value == "idle"
     assert control_calls == []
     assert not missing_root.exists()

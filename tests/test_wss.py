@@ -299,6 +299,169 @@ async def test_connect_subscribe_get_ping_shadow_and_disconnect_in_order() -> No
 
 
 @direct_step
+async def test_renew_replaces_the_runner_and_waits_for_the_new_ping_response() -> None:
+    """Catch renew retaining the old socket or returning before the new one is healthy."""
+    first = _ready_socket(auto_ping_response=True)
+    replacement = _ready_socket(auto_ping_response=True)
+    session = FakeSession([first, replacement])
+    api = FakeApi()
+    sleep = ControlledSleep()
+    connections: list[tuple[bool, bool]] = []
+    client = _client(
+        api=api,
+        session=session,
+        sleep=sleep,
+        connections=connections,
+    )
+
+    await client.async_start()
+    await _wait_until(lambda: len(first.sent) == 4)
+    await sleep.release_next()
+    await _wait_until(lambda: connections[-1:] == [(True, True)])
+
+    renew_task = asyncio.create_task(client.async_renew_and_wait_healthy())
+    await _wait_until(lambda: len(replacement.sent) == 4)
+
+    assert first.sent[-1] == b"\xe0\x00"
+    assert first.close_calls == 1
+    assert first.closed is True
+    assert api.calls == 2
+    assert [call[1]["tokenKeyName"] for call in session.calls] == [
+        "synthetic-token-key-1",
+        "synthetic-token-key-2",
+    ]
+    assert [decode_packets(raw)[0].packet_type for raw in replacement.sent] == [
+        PacketType.CONNECT,
+        PacketType.SUBSCRIBE,
+        PacketType.SUBSCRIBE,
+        PacketType.PUBLISH,
+    ]
+    assert renew_task.done() is False
+
+    while not renew_task.done():
+        await sleep.release_next()
+    await renew_task
+
+    assert connections[-1] == (True, True)
+    assert replacement.sent[-1] == b"\xc0\x00"
+    await client.async_stop()
+
+
+@direct_step
+async def test_renew_timeout_does_not_reuse_the_previous_health_signal() -> None:
+    """Catch an already-healthy runner satisfying renewal for a silent replacement."""
+    first = _ready_socket(auto_ping_response=True)
+    replacement = _ready_socket()
+    sleep = ControlledSleep()
+    connections: list[tuple[bool, bool]] = []
+    client = _client(
+        api=FakeApi(),
+        session=FakeSession([first, replacement]),
+        sleep=sleep,
+        connections=connections,
+    )
+
+    await client.async_start()
+    await _wait_until(lambda: len(first.sent) == 4)
+    await sleep.release_next()
+    await _wait_until(lambda: connections[-1:] == [(True, True)])
+
+    with pytest.raises(TimeoutError):
+        await client.async_renew_and_wait_healthy(timeout_seconds=0.01)
+
+    assert connections[-1] == (True, False)
+    assert replacement.sent[-1] != b"\xc0\x00"
+    assert client.is_running is True
+
+    await client.async_stop()
+    assert replacement.sent[-1] == b"\xe0\x00"
+    assert replacement.close_calls == 1
+    assert client.is_running is False
+
+
+@direct_step
+async def test_cancelling_renew_cleans_the_new_runner_before_propagating() -> None:
+    """Catch cancellation leaking the replacement socket or its owned tasks."""
+    websocket = _ready_socket()
+    client = _client(
+        api=FakeApi(),
+        session=FakeSession([websocket]),
+        sleep=ControlledSleep(),
+    )
+    current = asyncio.current_task()
+    before = {task for task in asyncio.all_tasks() if task is not current}
+
+    renew_task = asyncio.create_task(client.async_renew_and_wait_healthy())
+    await _wait_until(lambda: len(websocket.sent) == 4)
+    renew_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await renew_task
+    await asyncio.sleep(0)
+
+    after = {task for task in asyncio.all_tasks() if task is not current and not task.done()}
+    assert after <= before
+    assert websocket.sent[-1] == b"\xe0\x00"
+    assert websocket.close_calls == 1
+    assert client.is_running is False
+
+
+@direct_step
+async def test_cancelling_renew_waits_for_the_old_runner_cleanup() -> None:
+    """Catch caller cancellation interrupting cleanup before a replacement can start."""
+
+    class BlockingCloseWebSocket(FakeWebSocket):
+        def __init__(self) -> None:
+            super().__init__()
+            self.close_started = asyncio.Event()
+            self.close_gate = asyncio.Event()
+
+        async def close(self) -> None:
+            self.close_calls += 1
+            self.close_started.set()
+            await self.close_gate.wait()
+            self.closed = True
+
+    websocket = BlockingCloseWebSocket()
+    first_suback = b"\x90\x03\x00\x01\x00"
+    websocket.queue_binary(b"\x20\x02\x00\x00" + first_suback)
+    websocket.queue_binary(b"\x90\x03\x00\x02\x00")
+    api = FakeApi()
+    client = _client(
+        api=api,
+        session=FakeSession([websocket, _ready_socket()]),
+        sleep=ControlledSleep(),
+    )
+    await client.async_start()
+    await _wait_until(lambda: len(websocket.sent) == 4)
+
+    renew_task = asyncio.create_task(client.async_renew_and_wait_healthy())
+    await websocket.close_started.wait()
+    renew_task.cancel()
+    await asyncio.sleep(0)
+    propagated_before_cleanup = renew_task.done()
+    websocket.close_gate.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await renew_task
+    assert propagated_before_cleanup is False
+    assert websocket.closed is True
+    assert websocket.close_calls == 1
+    assert api.calls == 1
+    assert client.is_running is False
+
+
+@direct_step
+async def test_renew_rejects_non_positive_health_timeout() -> None:
+    """Catch an unbounded or ambiguous discovery transport health deadline."""
+    client = _client(api=FakeApi(), session=FakeSession([]), sleep=ControlledSleep())
+
+    for timeout_seconds in (0.0, -1.0):
+        with pytest.raises(ValueError, match="timeout_seconds must be positive"):
+            await client.async_renew_and_wait_healthy(timeout_seconds)
+
+
+@direct_step
 async def test_correlated_shadow_get_only_sends_on_the_current_ready_connection() -> None:
     """Catch discovery gets being queued, replayed, or emitted before subscription."""
     websocket = _ready_socket()

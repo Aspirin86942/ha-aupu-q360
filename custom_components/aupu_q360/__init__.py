@@ -140,6 +140,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry[AupuRuntimeD
         return await RawDiscoveryArchive.async_open(on_failure)
 
     discovery_session = PanelStateDiscoverySession(
+        prepare_transport=coordinator.async_prepare_discovery_transport,
         request_shadow_get=coordinator.async_request_shadow_get,
         save_report=discovery_store.async_save,
         sanitizer_factory=lambda key: DiscoverySanitizer(

@@ -120,6 +120,7 @@ class DiscoveryHarness:
         stage_timeout: float = 1,
         session_timeout: float = 1,
         max_changes: int = 256,
+        prepare_blocked: bool = False,
     ) -> None:
         self.tokens: list[str] = []
         self.recorders: list[Callable[[RawShadowEvent], None] | None] = []
@@ -136,6 +137,11 @@ class DiscoveryHarness:
         self.order: list[str] = []
         self.archive: FakeArchive | None = None
         self.archive_unavailable = archive_unavailable
+        self.prepare_blocked = prepare_blocked
+        self.prepare_started = asyncio.Event()
+        self.prepare_release = asyncio.Event()
+        self.prepare_error: Exception | None = None
+        self.sanitizer_creations = 0
 
         async def archive_factory(on_failure: Callable[[str], None]) -> FakeArchive:
             self.order.append("archive:open")
@@ -145,12 +151,10 @@ class DiscoveryHarness:
             return self.archive
 
         self.session = PanelStateDiscoverySession(
+            prepare_transport=self.prepare_transport,
             request_shadow_get=self.request_shadow_get,
             save_report=self.save_report,
-            sanitizer_factory=lambda key: DiscoverySanitizer(
-                session_key=key,
-                device_id=_DEVICE_ID,
-            ),
+            sanitizer_factory=self.create_sanitizer,
             validate_report=self.validate_report,
             activate_observer=self.activate_observer,
             deactivate_observer=self.deactivate_observer,
@@ -163,6 +167,19 @@ class DiscoveryHarness:
             session_timeout_seconds=session_timeout,
             max_changes_per_phase=max_changes,
         )
+
+    async def prepare_transport(self) -> None:
+        self.order.append("transport:prepare")
+        self.prepare_started.set()
+        if self.prepare_blocked:
+            await self.prepare_release.wait()
+        if self.prepare_error is not None:
+            raise self.prepare_error
+
+    def create_sanitizer(self, key: bytes) -> DiscoverySanitizer:
+        self.order.append("sanitizer:create")
+        self.sanitizer_creations += 1
+        return DiscoverySanitizer(session_key=key, device_id=_DEVICE_ID)
 
     async def request_shadow_get(
         self,
@@ -276,6 +293,59 @@ async def _advance(
     token = await harness.token_at(index)
     harness.respond(token, state)
     return await task
+
+
+@pytest.mark.asyncio
+async def test_start_prepare_transport_precedes_discovery_resource_allocation() -> None:
+    """Catch observer, archive, sanitizer, timer, or Shadow get preceding WSS health."""
+    harness = DiscoveryHarness(archive_enabled=True, prepare_blocked=True)
+
+    start_task = asyncio.create_task(harness.session.async_start(all_modes_off_confirmed=True))
+    await harness.prepare_started.wait()
+
+    assert harness.session.state is DiscoveryState.TRANSPORT_PREPARING
+    assert harness.order == ["transport:prepare"]
+    assert harness.sanitizer_creations == 0
+    assert harness.archive is None
+    assert harness.observer is None
+    assert harness.tokens == []
+    assert harness.session._session_timer is None
+
+    harness.prepare_release.set()
+    token = await harness.token_at(0)
+    assert harness.order[:5] == [
+        "transport:prepare",
+        "sanitizer:create",
+        "archive:open",
+        "observer:activate",
+        "network:get",
+    ]
+    harness.respond(token, _state(False))
+    progress = await start_task
+
+    assert progress.state is DiscoveryState.READY
+    await harness.session.async_stop()
+
+
+@pytest.mark.asyncio
+async def test_prepare_transport_failure_is_fixed_and_leaves_no_discovery_resources() -> None:
+    """Catch renewal errors exposing details or leaving a partial discovery session."""
+    harness = DiscoveryHarness(archive_enabled=True)
+    harness.prepare_error = RuntimeError("synthetic private transport detail")
+
+    with pytest.raises(DiscoveryWssUnavailableError) as raised:
+        await harness.session.async_start(all_modes_off_confirmed=True)
+
+    assert str(raised.value) == "discovery_wss_unavailable"
+    assert "synthetic" not in repr(raised.value)
+    assert harness.session.state is DiscoveryState.IDLE
+    assert harness.session.last_manual_restore_required is False
+    assert harness.sanitizer_creations == 0
+    assert harness.archive is None
+    assert harness.observer is None
+    assert harness.tokens == []
+    assert harness.saved_reports == []
+    assert harness.session._session_timer is None
 
 
 @pytest.mark.asyncio
@@ -488,7 +558,9 @@ async def test_archive_opens_before_observer_and_network_and_completes_before_sa
     harness = DiscoveryHarness(archive_enabled=True)
     await _start_ready(harness, _state(False))
 
-    assert harness.order[:4] == [
+    assert harness.order[:6] == [
+        "transport:prepare",
+        "sanitizer:create",
         "archive:open",
         "observer:activate",
         "network:get",
